@@ -13,6 +13,8 @@ waiting for your approval, or done.
 It follows every Claude Code session at once, on Windows and in WSL, and talks to the lamp over Bluetooth.
 No Hue Bridge is needed.
 
+![Tally's dashboard: the live lamp, open Claude Code sessions, and how the lamp shows each state](docs/screenshot.png)
+
 ## Install
 
 You need Windows 10 or 11 with Bluetooth, a Philips Hue lamp with Bluetooth, and Claude Code.
@@ -26,7 +28,7 @@ You need Windows 10 or 11 with Bluetooth, a Philips Hue lamp with Bluetooth, and
    3. **Choose the looks**: colour, brightness and behaviour for each state, with a Test button.
 
 After that Tally lives in the system tray. Click its lamp icon to open the dashboard: live sessions,
-the looks, quiet hours, pausing, and your lamp's colour range.
+the looks, an idle light, quiet hours, pausing, and your lamp's colour range.
 
 ### Lamp not found?
 
@@ -69,3 +71,10 @@ python build\build.py
 ```
 
 The installer lands in `dist\`.
+
+To release, bump `__version__` in `tally/__init__.py`, commit, and push a matching tag such as `v0.1.1`.
+GitHub Actions builds the installer and attaches it to a draft release; publish the draft when it looks right.
+
+## Licence
+
+[MIT](LICENSE). Tally is an independent project, not affiliated with or endorsed by Anthropic or Signify (Philips Hue).
