@@ -15,6 +15,8 @@ DEFAULTS = {
     "version": 1,
     "setup_done": False,
     "states": {
+        # mode "restore": the lamp goes back to how you left it; "look": the idle light is on, as below
+        "idle": {"mode": "restore", "behaviour": "steady", "kelvin": 2700, "brightness": 30, "period": 4.0},
         "working": {"behaviour": "steady", "kelvin": 2700, "brightness": 60, "period": 4.0},
         "needs": {"behaviour": "pulse", "kelvin": 2200, "brightness": 100, "period": 2.2},
         "done": {"behaviour": "flash", "kelvin": 4000, "brightness": 100, "period": 0.6, "seconds": 2.0},
@@ -30,7 +32,7 @@ DEFAULTS = {
 }
 LIMITS = {"kelvin": (1000, 20000), "brightness": (1, 100), "period": (0.4, 10),
           "seconds": (0.5, 10), "forget_after": (5, 480), "min_mireds": (0, 1000), "max_mireds": (0, 1000)}
-CHOICES = {"behaviour": BEHAVIOURS, "several": ("urgent", "latest")}
+CHOICES = {"behaviour": BEHAVIOURS, "several": ("urgent", "latest"), "mode": ("restore", "look")}
 TEXT = {"address": 64, "name": 80}
 HOLD_SECONDS = 120                # while finding the ends, give the lamp back after this long untouched
 DEFAULT_MIREDS = (50, 1000)       # 20,000 K to 1,000 K, until the ends are found on the lamp itself
@@ -195,9 +197,12 @@ class HueLamp:
                     return False
                 self.light = HueBLE.HueBleLight(device)
             await self.light.connect()
+            # A link can come up without the lamp's controls (Windows may hold them back when
+            # pairing is in trouble), so check one before calling the lamp connected.
+            await self.light.poll_power_state()
         except Exception as err:
-            self.ok, self.light, self.status = False, None, "unreachable"
             log(f"could not connect to the lamp ({err})")
+            await self._drop()
             return False
         self.ok, self.status = True, "connected"
         log(f"connected to {self.name}")
@@ -210,6 +215,11 @@ class HueLamp:
                 await self.light.disconnect()
             except Exception:
                 pass
+
+    async def _drop(self):
+        """Let go of a broken connection so the next attempt starts afresh with a new scan."""
+        await self.close()
+        self.light, self.status = None, "unreachable"
 
     def info(self):
         return {"kind": "hue", "name": self.name, "address": self.address, "status": self.status,
@@ -227,7 +237,7 @@ class HueLamp:
                 return await action()
             except Exception as err2:
                 log(f"still failing ({err2}); will keep trying in the background")
-                self.ok, self.status = False, "unreachable"
+                await self._drop()
                 return None
 
     async def read(self):
@@ -286,7 +296,7 @@ class Controller:
         self.lamp = lamp
         self.cfg = load_settings()
         self.sessions = {}            # session id -> {"state", "since", "seen", "started", "project", "cwd", "message"}
-        self.shown = "idle"
+        self.shown = "free"           # working, needs, idle (the idle look, or off), or free: the lamp is yours
         self.saved = None             # the lamp as it was before Tally took over
         self.lock = asyncio.Lock()    # one change of look at a time
         self.io = asyncio.Lock()      # one Bluetooth write at a time
@@ -326,10 +336,10 @@ class Controller:
         """Switch to another lamp, giving the old one back first."""
         async with self.lock:
             await self._stop()
-            if self.shown != "idle":
+            if self.shown != "free":
                 await self._restore()
             old, self.lamp = self.lamp, lamp
-            self.shown, self.saved = "idle", None
+            self.shown, self.saved = "free", None
         await old.close()
         await self.connect_lamp()
 
@@ -337,7 +347,7 @@ class Controller:
         """Give the lamp back and let go of it, for quitting."""
         async with self.lock:
             await self._stop()
-            if self.shown != "idle" or self.held:
+            if self.shown != "free" or self.held:
                 await self._restore()
             self.holding = True       # nothing more changes the lamp from here
         await self.lamp.close()
@@ -393,37 +403,45 @@ class Controller:
             del self.sessions[sid]
 
     def target(self):
+        """What the lamp should show now: working, needs, idle, or free (left as you had it)."""
         self.prune()
-        if self.preview:
-            return self.preview
-        busy = [v for v in self.sessions.values() if v["state"] != "idle"]
-        if self.muted() or not busy:
-            return "idle"
-        if self.cfg["several"] == "latest":
-            return max(busy, key=lambda v: v["since"])["state"]
-        return "needs" if any(v["state"] == "needs" for v in busy) else "working"
+        target = self.preview
+        if not target:
+            busy = [v for v in self.sessions.values() if v["state"] != "idle"]
+            if self.muted():
+                return "free"
+            if not busy:
+                target = "idle"
+            elif self.cfg["several"] == "latest":
+                target = max(busy, key=lambda v: v["since"])["state"]
+            else:
+                target = "needs" if any(v["state"] == "needs" for v in busy) else "working"
+        if target == "idle" and self.cfg["states"]["idle"]["mode"] == "restore":
+            return "free"
+        return target
 
     # ----- showing states
 
     async def update(self, finished=False):
         """Bring the lamp to the target state, playing the Finished look first if asked."""
         async with self.lock:
-            if self.holding:
+            # Without a connected lamp there is nothing to change; connecting redraws.
+            if self.holding or not self.lamp.ok:
                 return
             target = self.target()
             if target == self.shown and not finished and not self.dirty:
                 return
             self.dirty = False
             await self._stop()
-            if self.shown == "idle" and (target != "idle" or finished):
+            if self.shown == "free" and (target != "free" or finished):
                 self.saved = await self.lamp.read()
             if finished:
                 log("lamp -> finished")
                 await self._play("done", self.cfg["states"]["done"]["seconds"])
-            if target != "idle":
+            if target != "free":
                 log(f"lamp -> {target}")
                 self.anim = asyncio.create_task(self._play(target))
-            elif self.shown != "idle" or finished:
+            elif self.shown != "free" or finished:
                 log("lamp -> back to how you left it")
                 await self._restore()
             self.shown = target
@@ -503,7 +521,7 @@ class Controller:
             if not self.holding:
                 return
             await self._stop()
-            if self.shown == "idle" and not self.held:
+            if self.shown == "free" and not self.held:
                 self.saved = await self.lamp.read()
             self.held = True
             await self._write(power=True, mireds=mireds, brightness=254)
@@ -517,7 +535,7 @@ class Controller:
             if not self.holding:
                 return
             self.holding = False
-            if self.held and self.shown == "idle":
+            if self.held and self.shown == "free":
                 await self._restore()
             self.held = False
             self.dirty = True

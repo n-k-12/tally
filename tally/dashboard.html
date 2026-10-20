@@ -85,9 +85,20 @@
   /* lamp preview */
   .well { position: relative; background: var(--well); border: 1px solid #1d1d1d; border-radius: 10px; height: 150px;
           overflow: hidden; display: flex; align-items: flex-end; justify-content: center; }
-  .well .tag { position: absolute; top: 11px; left: 13px; font: 11px var(--mono); color: var(--muted); z-index: 2; }
+  .well .tag { position: absolute; top: 11px; left: 13px; right: 76px; font: 11px var(--mono); color: var(--muted); z-index: 2;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .well .try { position: absolute; top: 6px; right: 6px; z-index: 2; }
   .now .well { height: 186px; }
+  .switch { position: absolute; top: 8px; right: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 8px;
+            font: 11px var(--mono); color: var(--muted); cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; pointer-events: none; }
+  .switch .track { position: relative; width: 34px; height: 20px; border-radius: 999px; background: #2a2a2a;
+                   border: 1px solid var(--line-2); transition: background .2s, border-color .2s; }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+                          background: #8f8981; transition: transform .2s, background .2s; }
+  .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(14px); background: var(--accent-ink); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .lamp { position: relative; width: 220px; height: 124px; flex: none; }
   .now .lamp { transform: scale(1.22); transform-origin: 50% 100%; }
@@ -250,7 +261,13 @@
     <div class="card now">
       <div class="well">
         <span class="tag">Live</span>
+        <label class="switch" id="idle-switch" hidden><span class="switch-label">Idle light</span>
+          <input type="checkbox" id="idle-on" role="switch"><span class="track"></span></label>
         <div class="lamp" id="now-lamp" data-beh="off"></div>
+      </div>
+      <div class="field" id="idle-colour" hidden>
+        <div class="lab"><span>Idle colour</span><span class="val" id="idle-kval"></span></div>
+        <input type="range" class="kelvin" id="idle-kelvin" min="0" max="1000" step="1" aria-label="Idle colour">
       </div>
       <div class="state-name"><i class="dot" id="now-dot" style="--c: 90 86 80"></i><span id="now-title">Idle</span></div>
       <div class="muted" id="now-sub">Waiting for the server…</div>
@@ -342,7 +359,8 @@
 const $ = (sel, el = document) => el.querySelector(sel);
 const BEHAVIOURS = ["steady", "breathe", "pulse", "flash"];
 const PRESETS = [2200, 2700, 3000, 4000, 6500];
-const NAMES = { working: "Working", needs: "Needs you", done: "Finished", idle: "Idle" };
+const NAMES = { working: "Working", needs: "Needs you", done: "Finished", idle: "Idle", free: "Idle" };
+const LOOKS = ["working", "needs", "done"];
 const SESSION_LABEL = { working: "Working", needs: "Waiting for your approval", idle: "Idle" };
 const LAMP_STATUS = { connected: "connected", connecting: "connecting…", "not found": "not found", unreachable: "can't connect" };
 const LAMP = '<div class="shade"></div><div class="lit"><div class="anim"><div class="glow"></div><div class="lit-shade"></div></div></div><div class="base"></div>';
@@ -474,7 +492,7 @@ function buildCard(name) {
     <p class="desc"></p>
     <div class="field">
       <div class="lab">Behaviour</div>
-      <div class="seg" role="group" aria-label="Behaviour">
+      <div class="seg behaviours" role="group" aria-label="Behaviour">
         ${BEHAVIOURS.map(b => `<button type="button" data-b="${b}">${cap(b)}</button>`).join("")}
       </div>
     </div>
@@ -508,7 +526,7 @@ function buildCard(name) {
     if (snap && snap.lamp.showing === name) renderNow();
     save({ states: { [name]: { [key]: value } } });
   };
-  $(".seg", card).addEventListener("click", e => { const b = e.target.closest("button"); if (b) set("behaviour", b.dataset.b); });
+  $(".behaviours", card).addEventListener("click", e => { const b = e.target.closest("button"); if (b) set("behaviour", b.dataset.b); });
   $(".chips", card).addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) set("kelvin", +c.dataset.k); });
   kelvin.addEventListener("input", () => set("kelvin", kelvinAt(+kelvin.value)));
   $(".bright", card).addEventListener("input", e => set("brightness", +e.target.value));
@@ -526,17 +544,17 @@ function syncCard(name) {
   card.style.setProperty("--c", kelvinRGB(look.kelvin));
   paintLamp($(".lamp", card), look);
   let tag = animated ? `${cap(look.behaviour)} · ${look.period} s` : "Steady";
-  if (name === "done") tag += `, ${look.seconds} s, then back`;
+  if (name === "done") tag = `${cap(look.behaviour)} for ${look.seconds} s`;
   $(".tag", card).textContent = tag;
 
   const desc = {
     working: "While any agent is working.",
     needs: "When an agent is waiting for your approval.",
-    done: cfg.several === "latest" ? "Whenever an agent finishes, then back." : "When the last agent finishes, then back to how you left it.",
+    done: cfg.several === "latest" ? "Whenever an agent finishes." : "When the last agent finishes.",
   };
   $(".desc", card).textContent = desc[name];
 
-  card.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.b === look.behaviour));
+  card.querySelectorAll(".behaviours button").forEach(b => b.setAttribute("aria-pressed", b.dataset.b === look.behaviour));
   card.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", Math.abs(+c.dataset.k - look.kelvin) < 25));
 
   const kelvin = $(".kelvin", card);
@@ -651,7 +669,7 @@ function renderRange() {
   if (lo !== range[0] || hi !== range[1]) {
     range = [lo, hi];
     document.querySelectorAll(".kelvin").forEach(k => k.style.setProperty("--track", kelvinTrack()));
-    ["working", "needs", "done"].forEach(syncCard);
+    LOOKS.forEach(syncCard);
   }
   $("#range-val").textContent = `${lo}–${hi} K`;
   $("#range-note").textContent = rangeMessage ||
@@ -679,14 +697,15 @@ function syncOptions() {
 function renderNow() {
   const lamp = snap.lamp;
   const showing = lamp.showing;
-  const look = showing === "idle" ? null : cfg.states[showing];
+  const idleLook = cfg.states.idle.mode === "look";
+  const look = showing === "free" || (showing === "idle" && !idleLook) ? null : cfg.states[showing];
   paintLamp($("#now-lamp"), look);
   $("#now-dot").style.setProperty("--c", look ? kelvinRGB(look.kelvin) : "90 86 80");
 
   let title = NAMES[showing] || showing;
   if (lamp.testing) title = `Testing · ${title}`;
-  else if (showing === "idle" && cfg.paused) title = "Paused";
-  else if (showing === "idle" && snap.quiet_now) title = "Quiet hours";
+  else if (showing === "free" && cfg.paused) title = "Paused";
+  else if (showing === "free" && snap.quiet_now) title = "Quiet hours";
   $("#now-title").textContent = title;
 
   const n = s => snap.sessions.filter(x => x.state === s).length;
@@ -695,9 +714,19 @@ function renderNow() {
   if (n("working")) parts.push(`${n("working")} working`);
   if (n("idle")) parts.push(`${n("idle")} idle`);
   let sub = parts.join(" · ");
-  if (showing === "idle") sub = cfg.paused ? "Tally won't touch the lamp until you resume."
+  if (showing === "free") sub = cfg.paused ? "Tally won't touch the lamp until you resume."
                                : snap.quiet_now ? "Tally is leaving the lamp alone for the night."
                                : "The lamp is yours until an agent starts.";
+  else if (showing === "idle") sub = "Showing your idle colour until an agent starts.";
+
+  // The idle light switch and colour, offered while no agent is busy.
+  const idleNow = (showing === "idle" || showing === "free") && !lamp.testing && !cfg.paused && !snap.quiet_now;
+  $("#idle-switch").hidden = !idleNow;
+  $("#idle-colour").hidden = !idleNow || !idleLook;
+  $("#idle-on").checked = idleLook;
+  const slider = $("#idle-kelvin");
+  if (document.activeElement !== slider) slider.value = positionOf(cfg.states.idle.kelvin);
+  $("#idle-kval").textContent = `${cfg.states.idle.kelvin} K`;
   $("#now-sub").textContent = sub;
 
   const pill = $("#lamp-pill");
@@ -750,7 +779,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 let scan = { busy: false, lamps: null, error: "" };
 
 const SCANBOX = `
-  <div class="current"><i></i><span></span></div>
+  <div class="current"><i></i><span></span><button class="ghost" type="button" data-use hidden>Try again</button></div>
   <div class="measure"><button class="btn" type="button" data-scan>Scan for lamps</button><span class="muted scan-note"></span></div>
   <div class="found"></div>
   <details class="help">
@@ -775,13 +804,17 @@ function renderScan() {
       : lamp.status === "not found" ? `${lamp.name}: not found. Is it switched on and close by?`
       : lamp.status === "unreachable" ? `${lamp.name}: can't connect. It may need pairing; see below.`
       : `${lamp.name}: ${LAMP_STATUS[lamp.status] || lamp.status}`;
+    const retry = $("[data-use]", cur);
+    retry.hidden = !bad;
+    retry.dataset.use = chosen;
+    retry.dataset.name = cfg.lamp.name;
     $("[data-scan]", box).disabled = scan.busy;
     $(".scan-note", box).textContent = scan.busy ? "Looking for Hue lamps nearby…" : scan.error ||
       (scan.lamps && !scan.lamps.length ? "No Hue lamps found. See the help below." : "");
     const html = (scan.lamps || []).map(l => `
       <div class="item"><div><b>${esc(l.name)}</b><span class="sub"><code>${esc(l.address)}</code></span></div>
-        <div class="actions">${l.address === chosen ? '<span class="tagline good">In use</span>'
-          : `<button class="btn" type="button" data-use="${esc(l.address)}" data-name="${esc(l.name)}">Use this lamp</button>`}</div>
+        <div class="actions">${l.address === chosen && lamp.connected ? '<span class="tagline good">In use</span>'
+          : `<button class="btn" type="button" data-use="${esc(l.address)}" data-name="${esc(l.name)}">${l.address === chosen ? "Try again" : "Use this lamp"}</button>`}</div>
       </div>`).join("");
     const found = $(".found", box);
     if (found.dataset.html !== html) {   // rebuilding only on change keeps clicks from being lost
@@ -900,6 +933,21 @@ function initSetup() {
   });
 }
 
+function initIdle() {
+  const slider = $("#idle-kelvin");
+  slider.style.setProperty("--track", kelvinTrack());
+  $("#idle-on").addEventListener("change", e => {
+    cfg.states.idle.mode = e.target.checked ? "look" : "restore";
+    save({ states: { idle: { mode: cfg.states.idle.mode } } });
+    renderNow();
+  });
+  slider.addEventListener("input", () => {
+    cfg.states.idle.kelvin = kelvinAt(+slider.value);
+    save({ states: { idle: { kelvin: cfg.states.idle.kelvin } } });
+    renderNow();
+  });
+}
+
 function renderLive() {
   renderNow();
   renderSessions();
@@ -918,7 +966,7 @@ function init() {
   cfg = structuredClone(snap.settings);
   range = snap.lamp.kelvin;
   const states = $("#states");
-  for (const name of ["working", "needs", "done"]) {
+  for (const name of LOOKS) {
     states.appendChild(buildCard(name));
     syncCard(name);
   }
@@ -927,6 +975,7 @@ function init() {
   initOptions();
   syncOptions();
   initSetup();
+  initIdle();
   if (!snap.app.setup_done) {
     document.body.classList.add("setup");
     setStep(1);
