@@ -373,11 +373,23 @@ function kelvinRGB(k) {
   return s[s.length - 1][1].join(" ");
 }
 
-function kelvinTrack(lo = range[0], hi = range[1]) {
+// The look cards' colour sliders run 0-1000 on a log scale of kelvin, so equal steps look
+// like equal changes: 1000 K to 2000 K is as big a change to the eye as 10,000 K to 20,000 K.
+const SLIDER = 1000;
+function kelvinAt(pos) {
+  const k = range[0] * Math.pow(range[1] / range[0], pos / SLIDER);
+  const step = k < 3000 ? 10 : k < 10000 ? 50 : 100;
+  return Math.round(k / step) * step;
+}
+function positionOf(k) {
+  return Math.round(SLIDER * Math.log(k / range[0]) / Math.log(range[1] / range[0]));
+}
+
+function kelvinTrack(lo = range[0], hi = range[1], log = true) {
   const stops = [];
-  for (let i = 0; i <= 16; i++) {
-    const k = lo + (hi - lo) * i / 16;
-    stops.push(`rgb(${kelvinRGB(k)}) ${i * 6.25}%`);
+  for (let i = 0; i <= 32; i++) {
+    const k = log ? lo * Math.pow(hi / lo, i / 32) : lo + (hi - lo) * i / 32;
+    stops.push(`rgb(${kelvinRGB(k)}) ${(i * 100 / 32).toFixed(2)}%`);
   }
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
@@ -471,7 +483,7 @@ function buildCard(name) {
       <div class="chips">
         ${PRESETS.map(k => `<button type="button" class="chip" data-k="${k}" style="--dot: rgb(${kelvinRGB(k)})"><i></i>${k} K</button>`).join("")}
       </div>
-      <input type="range" class="kelvin" step="50" aria-label="Colour temperature in kelvin">
+      <input type="range" class="kelvin" min="0" max="1000" step="1" aria-label="Colour temperature">
     </div>
     <div class="field">
       <div class="lab"><span>Brightness</span><span class="val bval"></span></div>
@@ -488,8 +500,6 @@ function buildCard(name) {
     </div>` : ""}`;
 
   const kelvin = $(".kelvin", card);
-  kelvin.min = range[0];
-  kelvin.max = range[1];
   kelvin.style.setProperty("--track", kelvinTrack());
 
   const set = (key, value) => {
@@ -500,7 +510,7 @@ function buildCard(name) {
   };
   $(".seg", card).addEventListener("click", e => { const b = e.target.closest("button"); if (b) set("behaviour", b.dataset.b); });
   $(".chips", card).addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) set("kelvin", +c.dataset.k); });
-  kelvin.addEventListener("input", () => set("kelvin", +kelvin.value));
+  kelvin.addEventListener("input", () => set("kelvin", kelvinAt(+kelvin.value)));
   $(".bright", card).addEventListener("input", e => set("brightness", +e.target.value));
   $(".period", card).addEventListener("input", e => set("period", +e.target.value));
   if (name === "done") $(".seconds", card).addEventListener("input", e => set("seconds", +e.target.value));
@@ -530,7 +540,7 @@ function syncCard(name) {
   card.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", Math.abs(+c.dataset.k - look.kelvin) < 25));
 
   const kelvin = $(".kelvin", card);
-  kelvin.value = look.kelvin;
+  kelvin.value = positionOf(look.kelvin);
   $(".kval", card).textContent = `${look.kelvin} K`;
   const bright = $(".bright", card);
   bright.value = look.brightness;
@@ -602,8 +612,8 @@ async function release() {
 
 function initCalibration() {
   const warm = $("#warm"), cool = $("#cool");
-  warm.style.setProperty("--track", kelvinTrack(+warm.min, +warm.max));
-  cool.style.setProperty("--track", kelvinTrack(+cool.min, +cool.max));
+  warm.style.setProperty("--track", kelvinTrack(+warm.min, +warm.max, false));
+  cool.style.setProperty("--track", kelvinTrack(+cool.min, +cool.max, false));
   const label = () => {
     $("#warm-val").textContent = `${warm.value} K`;
     $("#cool-val").textContent = `${cool.value} K`;
@@ -640,16 +650,12 @@ function renderRange() {
   const [lo, hi] = snap.lamp.kelvin;
   if (lo !== range[0] || hi !== range[1]) {
     range = [lo, hi];
-    document.querySelectorAll(".kelvin").forEach(k => {
-      k.min = lo;
-      k.max = hi;
-      k.style.setProperty("--track", kelvinTrack());
-    });
+    document.querySelectorAll(".kelvin").forEach(k => k.style.setProperty("--track", kelvinTrack()));
     ["working", "needs", "done"].forEach(syncCard);
   }
   $("#range-val").textContent = `${lo}–${hi} K`;
   $("#range-note").textContent = rangeMessage ||
-    (snap.lamp.measured ? "Set from your lamp." : "HueBLE's assumed range. Find the ends to use all of your lamp's.");
+    (snap.lamp.measured ? "Set from your lamp." : "Tally's default range. Find the ends to match your lamp exactly.");
 }
 
 function syncOptions() {

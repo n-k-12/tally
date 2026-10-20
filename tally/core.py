@@ -33,6 +33,7 @@ LIMITS = {"kelvin": (1000, 20000), "brightness": (1, 100), "period": (0.4, 10),
 CHOICES = {"behaviour": BEHAVIOURS, "several": ("urgent", "latest")}
 TEXT = {"address": 64, "name": 80}
 HOLD_SECONDS = 120                # while finding the ends, give the lamp back after this long untouched
+DEFAULT_MIREDS = (50, 1000)       # 20,000 K to 1,000 K, until the ends are found on the lamp itself
 RECONNECT_SECONDS = 20
 
 
@@ -115,7 +116,6 @@ def wave(behaviour, top):
 class NoLamp:
     """Stands in until a lamp has been chosen."""
 
-    mired_range = (153, 500)
     ok = False
 
     async def connect(self):
@@ -179,7 +179,6 @@ class HueLamp:
         self.light = None
         self.ok = False
         self.status = "connecting"    # connecting, connected, not found, unreachable
-        self.mired_range = (153, 500)
 
     async def connect(self):
         from bleak import BleakScanner
@@ -201,8 +200,6 @@ class HueLamp:
             log(f"could not connect to the lamp ({err})")
             return False
         self.ok, self.status = True, "connected"
-        self.mired_range = (getattr(self.light, "minimum_mireds", None) or 153,
-                            getattr(self.light, "maximum_mireds", None) or 500)
         log(f"connected to {self.name}")
         return True
 
@@ -309,7 +306,7 @@ class Controller:
         measured = self.cfg["lamp"]
         if measured["min_mireds"] and measured["max_mireds"]:
             return measured["min_mireds"], measured["max_mireds"]
-        return self.lamp.mired_range
+        return DEFAULT_MIREDS
 
     # ----- the lamp itself
 
