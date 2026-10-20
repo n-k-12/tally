@@ -116,15 +116,17 @@ def _run(args, timeout=20):
     return out.stdout
 
 
-def windows_target():
+def local_target():
+    """Claude Code on this computer itself."""
     home = Path.home()
-    return {"id": "windows", "label": "Windows", "path": str(home / ".claude" / "settings.json"),
+    label = {"win32": "Windows", "darwin": "This Mac"}.get(sys.platform, "This computer")
+    return {"id": "local", "label": label, "path": str(home / ".claude" / "settings.json"),
             "claude": (home / ".claude").exists(), "curl": None}
 
 
 def targets():
-    """Every Claude Code install Tally can connect: Windows itself, then each WSL distro (which starts them)."""
-    found = [windows_target()]
+    """Every Claude Code install Tally can connect: this computer, then on Windows each WSL distro (which starts them)."""
+    found = [local_target()]
     if sys.platform != "win32":
         return found
     try:

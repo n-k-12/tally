@@ -9,20 +9,25 @@
 """
 import argparse
 import asyncio
+import json
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import urllib.request
 import webbrowser
+from pathlib import Path
 
 from . import PORT, __version__, data_dir, hooks
 from .core import log
 from .server import Server
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.n-k-12.tally.plist"
 FROZEN = getattr(sys, "frozen", False)
+MAC = sys.platform == "darwin"
 
 
 def running(port):
@@ -49,7 +54,19 @@ def quit_running(port):
 
 
 def autostart(enable=None):
-    """Whether Tally starts with Windows. Pass True or False to change it."""
+    """Whether Tally starts when you log in. Pass True or False to change it."""
+    if MAC:
+        import plistlib
+
+        if enable is True:
+            LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+            LAUNCH_AGENT.write_bytes(plistlib.dumps({"Label": "com.n-k-12.tally", "RunAtLoad": True,
+                                                     "ProgramArguments": [sys.executable, "--background"]}))
+        elif enable is False:
+            LAUNCH_AGENT.unlink(missing_ok=True)
+        return LAUNCH_AGENT.exists()
+    if sys.platform != "win32":
+        return False
     import winreg
 
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
@@ -67,12 +84,17 @@ def autostart(enable=None):
             return False
 
 
-def message(text):
+def message(text, ask=None):
+    """Show a message. With `ask` (a button label), offer it next to Cancel and return whether it was chosen."""
     if sys.platform == "win32":
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, text, "Tally", 0x40)
-    else:
-        print(text)
+        return ctypes.windll.user32.MessageBoxW(None, text, "Tally", 0x41 if ask else 0x40) == 1
+    if MAC:
+        buttons = f'{{"Cancel", {json.dumps(ask)}}}' if ask else '{"OK"}'
+        script = f'display dialog {json.dumps(text)} with title "Tally" buttons {buttons} default button {2 if ask else 1}'
+        return subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
+    print(text)
+    return False
 
 
 def log_to_file():
@@ -96,6 +118,25 @@ def describe(server):
     return "Idle"
 
 
+def on_main(fn):
+    """Run fn on the main thread on a Mac, where the menu bar may only be touched from there."""
+    if MAC:
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(fn)
+    else:
+        fn()
+
+
+def uninstall_mac(icon):
+    """Mac apps are removed by dragging them to the Bin, so take Tally out of Claude Code first."""
+    if message("Take Tally's hooks out of Claude Code and stop it starting at login? Your settings are kept.",
+               ask="Uninstall"):
+        hooks.disconnect_all()
+        autostart(False)
+        message("Done. Now drag Tally from Applications to the Bin to finish removing it.")
+        icon.stop()
+
+
 def tray(server, loop, url):
     """Show the tray icon until Quit is chosen. Its lamp glows with the current state."""
     import pystray
@@ -116,15 +157,16 @@ def tray(server, loop, url):
         pystray.MenuItem(lambda item: "Resume lamp" if ctl.cfg["paused"] else "Pause lamp",
                          lambda icon, item: later(ctl.apply, {"paused": not ctl.cfg["paused"]})),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Start with Windows", lambda icon, item: autostart(not autostart()),
+        pystray.MenuItem("Start at login" if MAC else "Start with Windows", lambda icon, item: autostart(not autostart()),
                          checked=lambda item: FROZEN and autostart(), enabled=FROZEN),
         pystray.MenuItem("Check for updates", lambda icon, item: later(ctl.apply, {"check_updates": not ctl.cfg["check_updates"]}),
                          checked=lambda item: ctl.cfg["check_updates"]),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Uninstall Tally…", lambda icon, item: uninstall_mac(icon), visible=MAC and FROZEN),
         pystray.MenuItem("Quit Tally", lambda icon, item: icon.stop()),
     )
     icon = pystray.Icon("Tally", images["idle"], "Tally", menu)
-    server.on_quit = icon.stop
+    server.on_quit = lambda: on_main(icon.stop)
 
     def follow(icon):
         icon.visible = True
@@ -133,15 +175,22 @@ def tray(server, loop, url):
             state = "paused" if ctl.cfg["paused"] else ctl.shown
             blink = not blink
             image = images["idle"] if state == "needs" and blink else images.get(state, images["idle"])
-            if icon.icon is not image:
-                icon.icon = image
             title = f"Tally · {describe(server)}"
-            if icon.title != title:
-                icon.title = title
-            if server.update and told != server.update["version"]:
-                told = server.update["version"]
-                icon.update_menu()
-                icon.notify(f"Tally {told} is available. Choose 'Get Tally {told}' in the tray menu.", "Tally")
+            news = server.update["version"] if server.update and told != server.update["version"] else None
+            told = news or told
+
+            def redraw(image=image, title=title, news=news):
+                if icon.icon is not image:
+                    icon.icon = image
+                if icon.title != title:
+                    icon.title = title
+                if news:
+                    icon.update_menu()
+                    try:
+                        icon.notify(f"Tally {news} is available. Choose 'Get Tally {news}' in the menu.", "Tally")
+                    except Exception:
+                        pass   # not every system can show notifications
+            on_main(redraw)
             stopping.wait(0.7)
 
     icon.run(setup=follow)
@@ -156,8 +205,20 @@ def main(argv=None):
     p.add_argument("--fake", action="store_true", help="use a pretend lamp that prints instead")
     p.add_argument("--no-tray", action="store_true", help="run in this terminal instead of the tray")
     p.add_argument("--port", type=int, default=PORT, help="for development only; Claude Code hooks use 4567")
+    p.add_argument("--self-check", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--version", action="version", version=f"Tally {__version__}")
     args = p.parse_args(argv)
+
+    if args.self_check:
+        # For the build: prove the Bluetooth and tray libraries made it into the app.
+        import bleak  # noqa: F401
+        import pystray  # noqa: F401
+        from bleak.backends.scanner import BaseBleakScanner  # noqa: F401
+        backend = {"win32": "bleak.backends.winrt.scanner", "darwin": "bleak.backends.corebluetooth.scanner"}
+        if sys.platform in backend:
+            __import__(backend[sys.platform])
+        (data_dir() / "self-check-ok").write_text(__version__)
+        return
 
     if sys.stdout is None or (FROZEN and not args.no_tray):
         log_to_file()
@@ -168,8 +229,7 @@ def main(argv=None):
     if args.uninstall:
         log("uninstalling: disconnecting Claude Code and closing Tally")
         hooks.disconnect_all()
-        if sys.platform == "win32":
-            autostart(False)
+        autostart(False)
         return quit_running(args.port)
     if running(args.port):        # already running: just show it
         if not args.background:
@@ -203,6 +263,12 @@ def main(argv=None):
         return
     if not args.background:
         webbrowser.open(url)
+    # The Windows installer offers starting with Windows; a Mac app has no installer, so turn
+    # starting at login on the first time (it can be switched off in the menu).
+    first_run = data_dir() / "login-item-set"
+    if MAC and FROZEN and not first_run.exists():
+        autostart(True)
+        first_run.touch()
     tray(server, loop, url)
     server.on_quit = None
     loop.call_soon_threadsafe(server.quit)

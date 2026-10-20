@@ -1,17 +1,25 @@
-# Push a tag like v0.1.0 to build TallySetup on Windows and attach it to a draft release.
-# Check the draft on GitHub, then publish it; the app's update check only sees published releases.
+# Push a tag like v0.2.0 to build Tally for Windows and Mac (Apple Silicon), check both start,
+# and attach them to a draft release. Check the draft on GitHub, then publish it; the app's
+# update check only sees published releases.
+# Run it by hand (Actions → Release → Run workflow) to build and check without releasing;
+# the builds are then kept as downloadable artifacts on the run's page.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +28,7 @@ jobs:
           python-version: "3.13"
 
       - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           version=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('tally/__init__.py').read()).group(1))")
@@ -28,13 +37,31 @@ jobs:
           fi
 
       - name: Install Inno Setup
+        if: runner.os == 'Windows'
         run: choco install innosetup --no-progress -y
 
       - name: Build
         run: python build/build.py
 
+      - name: Check the app starts
+        run: python build/smoke_test.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tally-${{ runner.os }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create draft release
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/TallySetup-*.exe --draft --generate-notes --title "Tally $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Tally $GITHUB_REF_NAME"

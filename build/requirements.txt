@@ -1,22 +1,24 @@
-# Exact versions the release is built with (from 'pip freeze' in the build venv).
+# Exact versions the release is built with (from 'pip freeze' in the Windows build venv).
+# Windows-only packages are marked; on a Mac, pip adds bleak's and pystray's macOS
+# libraries (pyobjc) itself, at the versions those packages ask for.
 altgraph==0.17.5
 bleak==3.0.2
 packaging==26.3
-pefile==2024.8.26
+pefile==2024.8.26 ; sys_platform == "win32"
 pillow==13.0.0
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
 pystray==0.19.5
-pywin32-ctypes==0.2.3
+pywin32-ctypes==0.2.3 ; sys_platform == "win32"
 setuptools==84.2.0
 six==1.17.0
 typing_extensions==4.16.0
-winrt-runtime==3.2.1
-winrt-Windows.Devices.Bluetooth==3.2.1
-winrt-Windows.Devices.Bluetooth.Advertisement==3.2.1
-winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1
-winrt-Windows.Devices.Enumeration==3.2.1
-winrt-Windows.Devices.Radios==3.2.1
-winrt-Windows.Foundation==3.2.1
-winrt-Windows.Foundation.Collections==3.2.1
-winrt-Windows.Storage.Streams==3.2.1
+winrt-runtime==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Devices.Bluetooth==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Devices.Bluetooth.Advertisement==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Devices.Enumeration==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Devices.Radios==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Foundation==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Storage.Streams==3.2.1 ; sys_platform == "win32"

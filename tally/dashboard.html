@@ -225,7 +225,7 @@
 </style>
 </head>
 <body>
-<div class="offline" id="offline" hidden>Can't reach Tally. Is it still running? Look for its lamp icon in the system tray.</div>
+<div class="offline" id="offline" hidden>Can't reach Tally. Is it still running? Look for its lamp icon in the system tray or menu bar.</div>
 <div class="banner" id="update-banner" hidden>Tally <span id="update-version"></span> is available. <a id="update-link" target="_blank" rel="noopener">Download it</a></div>
 
 <div class="page">
@@ -778,18 +778,33 @@ $("#sessions").addEventListener("click", async e => {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 let scan = { busy: false, lamps: null, error: "" };
 
-const SCANBOX = `
+const VISIBLE = `<li>Make the lamp visible. In the Hue app, look for the option to make it visible to other devices
+          (often under Settings → Voice assistants), or switch it off and on at the wall. Close the Hue app
+          afterwards, as the lamp may only talk to one device at a time.</li>`;
+const PAIRING_HELP = {
+  windows: `
+      <li>Check Bluetooth is on: <a href="ms-settings:bluetooth">open Bluetooth settings</a>.</li>
+      ${VISIBLE}
+      <li>Pair it with Windows: in Bluetooth settings choose <b>Add device</b> → <b>Bluetooth</b>, then pick the lamp.</li>
+      <li>Come back and scan again.</li>`,
+  mac: `
+      <li>Check Bluetooth is on, in Control Centre.</li>
+      <li>Check Tally may use Bluetooth: System Settings → Privacy &amp; Security → Bluetooth, and turn Tally on.</li>
+      ${VISIBLE}
+      <li>Scan again. The first time Tally talks to the lamp, macOS may ask to pair: choose <b>Pair</b> or <b>Connect</b>.</li>`,
+  other: `
+      <li>Check Bluetooth is on.</li>
+      ${VISIBLE}
+      <li>Pair the lamp in your system's Bluetooth settings, then scan again.</li>`,
+};
+
+const scanBox = platform => `
   <div class="current"><i></i><span></span><button class="ghost" type="button" data-use hidden>Try again</button></div>
   <div class="measure"><button class="btn" type="button" data-scan>Scan for lamps</button><span class="muted scan-note"></span></div>
   <div class="found"></div>
   <details class="help">
     <summary>Lamp not showing up, or won't connect?</summary>
-    <ol>
-      <li>Check Bluetooth is on: <a href="ms-settings:bluetooth">open Bluetooth settings</a>.</li>
-      <li>Make the lamp visible. In the Hue app, look for the option to make it visible to other devices
-          (often under Settings → Voice assistants), or switch it off and on at the wall.</li>
-      <li>Pair it with Windows: in Bluetooth settings choose <b>Add device</b> → <b>Bluetooth</b>, then pick the lamp.</li>
-      <li>Come back and scan again.</li>
+    <ol>${PAIRING_HELP[platform] || PAIRING_HELP.other}
     </ol>
   </details>`;
 
@@ -869,7 +884,7 @@ function renderClaude() {
     }).join("");
     $("[data-claude-refresh]", box).disabled = claude.busy;
     $(".claude-note", box).textContent = claude.note ||
-      (claude.busy && !list ? "Looking for Claude Code on Windows and in WSL… this can take a few seconds." : "");
+      (claude.busy && !list ? "Looking for Claude Code… this can take a few seconds." : "");
   });
 }
 
@@ -970,7 +985,7 @@ function init() {
     states.appendChild(buildCard(name));
     syncCard(name);
   }
-  document.querySelectorAll(".scanbox").forEach(b => { b.innerHTML = SCANBOX; });
+  document.querySelectorAll(".scanbox").forEach(b => { b.innerHTML = scanBox(snap.app.platform); });
   document.querySelectorAll(".claudebox").forEach(b => { b.innerHTML = CLAUDEBOX; });
   initOptions();
   syncOptions();

@@ -1,6 +1,7 @@
 """The local web server: Claude Code hooks post to it, and it serves the dashboard and its API."""
 import asyncio
 import json
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -48,7 +49,8 @@ class Server:
     def snapshot(self):
         snap = self.ctl.snapshot()
         snap["app"] = {"version": __version__, "setup_done": self.ctl.cfg["setup_done"],
-                       "update": self.update, "fake": self.fake}
+                       "update": self.update, "fake": self.fake,
+                       "platform": {"win32": "windows", "darwin": "mac"}.get(sys.platform, "other")}
         return snap
 
     # ----- API
@@ -166,11 +168,11 @@ class Server:
             await asyncio.sleep(UPDATE_EVERY)
 
     async def refresh_hooks(self):
-        """Bring Windows' Claude Code hooks up to this version if an older Tally wrote them."""
+        """Bring this computer's Claude Code hooks up to this version if an older Tally wrote them."""
         def job():
-            windows = hooks.windows_target()
-            if hooks.state_of(windows["path"]) == "outdated":
-                hooks.connect(windows)
+            local = hooks.local_target()
+            if hooks.state_of(local["path"]) == "outdated":
+                hooks.connect(local)
                 log("updated the Claude Code hooks to this version")
         try:
             await asyncio.get_running_loop().run_in_executor(None, job)
