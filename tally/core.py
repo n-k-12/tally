@@ -1,44 +1,19 @@
-#!/usr/bin/env python3
-"""Tally, Bluetooth test version.
-
-Lights a Philips Hue Bluetooth lamp (White Ambiance or colour) while
-Claude Code is working, pulses it when Claude needs your approval,
-and flashes it when the last session finishes.
-
-  python3 tally_ble.py scan                  find Hue lamps nearby
-  python3 tally_ble.py demo ADDRESS          play every state once on the lamp
-  python3 tally_ble.py serve ADDRESS         keep the lamp connected and listen for Claude Code
-  python3 tally_ble.py serve --fake          same, but print to the terminal instead of using a lamp
-  python3 tally_ble.py signal STATE          send a state by hand: working, needs-you, done, end
-  python3 tally_ble.py status                show what the server is tracking
-
-While 'serve' runs, open http://127.0.0.1:4567/ for the control station: live
-sessions and how the lamp shows each state. Settings are kept in
-tally_settings.json and the page in tally_dashboard.html, both next to this file.
-
-Needs Python 3.11+ and:  python3 -m pip install HueBLE==2.2.3
-"""
-import argparse
+"""Settings, lamps, and the controller that decides what the lamp shows."""
 import asyncio
 import json
 import math
 import re
-import sys
 import time
-import urllib.request
-from pathlib import Path
 
-PORT = 4567
-HERE = Path(__file__).resolve().parent
-SETTINGS_FILE = HERE / "tally_settings.json"
-DASHBOARD_FILE = HERE / "tally_dashboard.html"
+from . import data_dir
 
-STATES = ("working", "needs-you", "done", "end")
 BEHAVIOURS = ("steady", "breathe", "pulse", "flash")
 
 # Colour temperature is in kelvin and brightness in percent here; the lamp
 # itself takes mireds (1,000,000 / kelvin) and brightness 1-254.
 DEFAULTS = {
+    "version": 1,
+    "setup_done": False,
     "states": {
         "working": {"behaviour": "steady", "kelvin": 2700, "brightness": 60, "period": 4.0},
         "needs": {"behaviour": "pulse", "kelvin": 2200, "brightness": 100, "period": 2.2},
@@ -48,14 +23,17 @@ DEFAULTS = {
     "quiet": {"enabled": False, "from": "22:00", "until": "08:00"},
     "paused": False,
     "forget_after": 45,           # minutes before a session that has sent nothing is dropped
-    # The lamp's real ends, found by eye on the dashboard; 0 means not set yet. Lamps
-    # report back whatever they were sent, so the range can't be read from them.
-    "lamp": {"min_mireds": 0, "max_mireds": 0},
+    # The chosen lamp. Its ends are found by eye on the dashboard (0 means not yet):
+    # lamps report back whatever they were sent, so the range can't be read from them.
+    "lamp": {"address": "", "name": "", "min_mireds": 0, "max_mireds": 0},
+    "check_updates": True,
 }
 LIMITS = {"kelvin": (1000, 20000), "brightness": (1, 100), "period": (0.4, 10),
           "seconds": (0.5, 10), "forget_after": (5, 480), "min_mireds": (0, 1000), "max_mireds": (0, 1000)}
-HOLD_SECONDS = 120                # while finding the ends, give the lamp back after this long untouched
 CHOICES = {"behaviour": BEHAVIOURS, "several": ("urgent", "latest")}
+TEXT = {"address": 64, "name": 80}
+HOLD_SECONDS = 120                # while finding the ends, give the lamp back after this long untouched
+RECONNECT_SECONDS = 20
 
 
 def log(msg):
@@ -80,26 +58,34 @@ def clean(value, current, key=None):
         return round(v) if isinstance(current, int) else round(v, 2)
     if key in CHOICES:
         return value if value in CHOICES[key] else current
+    if key in TEXT:
+        return value[:TEXT[key]] if isinstance(value, str) else current
     if key in ("from", "until"):
         ok = isinstance(value, str) and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value)
         return value if ok else current
     return current
 
 
+def settings_file():
+    return data_dir() / "settings.json"
+
+
 def load_settings():
+    path = settings_file()
     try:
-        return clean(json.loads(SETTINGS_FILE.read_text()), DEFAULTS)
+        return clean(json.loads(path.read_text(encoding="utf-8")), DEFAULTS)
     except FileNotFoundError:
         return clean({}, DEFAULTS)
     except (OSError, ValueError) as err:
-        log(f"could not read {SETTINGS_FILE.name} ({err}); using defaults")
+        log(f"could not read {path} ({err}); using defaults")
         return clean({}, DEFAULTS)
 
 
 def save_settings(cfg):
-    tmp = SETTINGS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2))
-    tmp.replace(SETTINGS_FILE)
+    path = settings_file()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def quiet_now(q):
@@ -126,19 +112,49 @@ def wave(behaviour, top):
 
 # --------------------------------------------------------------------------- lamps
 
-class FakeLamp:
-    """Prints what a real lamp would do. Use it to test the hooks without Bluetooth."""
+class NoLamp:
+    """Stands in until a lamp has been chosen."""
 
     mired_range = (153, 500)
+    ok = False
+
+    async def connect(self):
+        return False
+
+    async def close(self):
+        pass
+
+    def info(self):
+        return {"kind": "none", "name": "", "address": "", "status": "none", "connected": False, "colour": False}
+
+    async def read(self):
+        return None
+
+    async def set(self, power=None, mireds=None, brightness=None):
+        pass
+
+
+class FakeLamp:
+    """Prints what a real lamp would do. Use it to try Tally without Bluetooth."""
+
+    mired_range = (153, 500)
+    address = "FA:KE:00:00:00:01"
 
     def __init__(self):
         self.state = {"power": True, "mireds": 300, "brightness": 200}
+        self.ok = False
 
     async def connect(self):
+        self.ok = True
         log("fake lamp ready")
+        return True
+
+    async def close(self):
+        self.ok = False
 
     def info(self):
-        return {"kind": "fake", "name": "Fake lamp", "connected": True, "colour": False}
+        return {"kind": "fake", "name": "Fake lamp", "address": self.address,
+                "status": "connected" if self.ok else "none", "connected": self.ok, "colour": False}
 
     async def read(self):
         return dict(self.state)
@@ -157,48 +173,64 @@ class FakeLamp:
 
 
 class HueLamp:
-    def __init__(self, address):
+    def __init__(self, address, name=""):
         self.address = address
-        self.name = address
+        self.name = name or address
         self.light = None
         self.ok = False
+        self.status = "connecting"    # connecting, connected, not found, unreachable
         self.mired_range = (153, 500)
 
     async def connect(self):
         from bleak import BleakScanner
         import HueBLE
 
-        log(f"looking for {self.address} (up to 20 s) ...")
-        device = await BleakScanner.find_device_by_address(self.address, timeout=20)
-        if device is None:
-            sys.exit("Lamp not found. Check it is powered on and close by, then run 'scan' to confirm the address.")
-        self.light = HueBLE.HueBleLight(device)
-        await self.light.connect()
-        self.ok = True
-        self.name = device.name or self.address
+        self.status = "connecting"
+        try:
+            if self.light is None:
+                log(f"looking for {self.address} ...")
+                device = await BleakScanner.find_device_by_address(self.address, timeout=15)
+                if device is None:
+                    self.status = "not found"
+                    log("lamp not found; is it powered on and close by?")
+                    return False
+                self.light = HueBLE.HueBleLight(device)
+            await self.light.connect()
+        except Exception as err:
+            self.ok, self.light, self.status = False, None, "unreachable"
+            log(f"could not connect to the lamp ({err})")
+            return False
+        self.ok, self.status = True, "connected"
         self.mired_range = (getattr(self.light, "minimum_mireds", None) or 153,
                             getattr(self.light, "maximum_mireds", None) or 500)
         log(f"connected to {self.name}")
+        return True
+
+    async def close(self):
+        self.ok = False
+        if self.light:
+            try:
+                await self.light.disconnect()
+            except Exception:
+                pass
 
     def info(self):
-        return {"kind": "hue", "name": self.name, "address": self.address, "connected": self.ok,
-                "colour": bool(getattr(self.light, "supports_colour_xy", False))}
+        return {"kind": "hue", "name": self.name, "address": self.address, "status": self.status,
+                "connected": self.ok, "colour": bool(getattr(self.light, "supports_colour_xy", False))}
 
     async def _retry(self, action):
+        if not self.ok:
+            return None   # the controller reconnects in the background
         try:
-            result = await action()
-            self.ok = True
-            return result
+            return await action()
         except Exception as err:  # Bluetooth drops happen; try once more after reconnecting
             log(f"Bluetooth error ({err}); reconnecting")
-            self.ok = False
             try:
                 await self.light.connect()
-                result = await action()
-                self.ok = True
-                return result
+                return await action()
             except Exception as err2:
-                log(f"still failing ({err2}); skipping this change")
+                log(f"still failing ({err2}); will keep trying in the background")
+                self.ok, self.status = False, "unreachable"
                 return None
 
     async def read(self):
@@ -226,6 +258,24 @@ class HueLamp:
         await self._retry(do)
 
 
+async def scan_lamps(timeout=10):
+    """Hue lamps nearby as [{"address", "name"}]. A lamp's name often arrives in a later
+    packet than the one that says it is a Hue lamp, so names keep being filled in."""
+    from bleak import BleakScanner
+    import HueBLE
+
+    found = {}
+
+    def seen(device, adv):
+        if HueBLE.UUID_HUE_IDENTIFIER in adv.service_uuids or device.address in found:
+            found[device.address] = adv.local_name or device.name or found.get(device.address)
+
+    log(f"scanning for Hue lamps for {timeout} s ...")
+    async with BleakScanner(seen):
+        await asyncio.sleep(timeout)
+    return [{"address": address, "name": name or "Hue lamp"} for address, name in found.items()]
+
+
 # --------------------------------------------------------------------------- state
 
 class Controller:
@@ -250,6 +300,7 @@ class Controller:
         self.holding = False          # the dashboard is showing raw colour temperatures to find the lamp's ends
         self.held = False             # the lamp has been changed by holding and needs giving back
         self.release_timer = None
+        self.connecting = False
 
     def muted(self):
         return self.cfg["paused"] or quiet_now(self.cfg["quiet"])
@@ -260,43 +311,41 @@ class Controller:
             return measured["min_mireds"], measured["max_mireds"]
         return self.lamp.mired_range
 
-    def hold(self, mireds):
-        """Show a raw colour temperature, past the usual range, while you look for the lamp's ends."""
-        self.holding = True
-        if self.release_timer:
-            self.release_timer.cancel()
-        self.release_timer = asyncio.create_task(self._release_later())
-        asyncio.create_task(self._hold(mireds))
+    # ----- the lamp itself
 
-    async def _hold(self, mireds):
-        async with self.lock:
-            if not self.holding:
-                return
-            await self._stop()
-            if self.shown == "idle" and not self.held:
-                self.saved = await self.lamp.read()
-            self.held = True
-            await self._write(power=True, mireds=mireds, brightness=254)
-
-    async def release(self):
-        """Give the lamp back after holding: to how you left it, or to what the sessions need."""
-        if self.release_timer and self.release_timer is not asyncio.current_task():
-            self.release_timer.cancel()
-        self.release_timer = None
-        async with self.lock:
-            if not self.holding:
-                return
-            self.holding = False
-            if self.held and self.shown == "idle":
-                await self._restore()
-            self.held = False
+    async def connect_lamp(self):
+        if self.connecting or self.lamp.ok:
+            return
+        self.connecting = True
+        try:
+            ok = await self.lamp.connect()
+        finally:
+            self.connecting = False
+        if ok:
             self.dirty = True
-        await self.update()
+            await self.update()
 
-    async def _release_later(self):
-        await asyncio.sleep(HOLD_SECONDS)
-        log("finding the lamp's ends was left open; giving the lamp back")
-        await self.release()
+    async def use_lamp(self, lamp):
+        """Switch to another lamp, giving the old one back first."""
+        async with self.lock:
+            await self._stop()
+            if self.shown != "idle":
+                await self._restore()
+            old, self.lamp = self.lamp, lamp
+            self.shown, self.saved = "idle", None
+        await old.close()
+        await self.connect_lamp()
+
+    async def shutdown(self):
+        """Give the lamp back and let go of it, for quitting."""
+        async with self.lock:
+            await self._stop()
+            if self.shown != "idle" or self.held:
+                await self._restore()
+            self.holding = True       # nothing more changes the lamp from here
+        await self.lamp.close()
+
+    # ----- sessions
 
     def signal(self, state, sid, info=None):
         info = info or {}
@@ -356,6 +405,8 @@ class Controller:
         if self.cfg["several"] == "latest":
             return max(busy, key=lambda v: v["since"])["state"]
         return "needs" if any(v["state"] == "needs" for v in busy) else "working"
+
+    # ----- showing states
 
     async def update(self, finished=False):
         """Bring the lamp to the target state, playing the Finished look first if asked."""
@@ -422,6 +473,8 @@ class Controller:
         else:
             await self._write(power=False)
 
+    # ----- testing and finding the lamp's ends
+
     def test(self, which):
         if self.test_task:
             self.test_task.cancel()
@@ -439,6 +492,46 @@ class Controller:
                 await asyncio.sleep(4)
         self.preview = None
         await self.update()
+
+    def hold(self, mireds):
+        """Show a raw colour temperature, past the usual range, while you look for the lamp's ends."""
+        self.holding = True
+        if self.release_timer:
+            self.release_timer.cancel()
+        self.release_timer = asyncio.create_task(self._release_later())
+        asyncio.create_task(self._hold(mireds))
+
+    async def _hold(self, mireds):
+        async with self.lock:
+            if not self.holding:
+                return
+            await self._stop()
+            if self.shown == "idle" and not self.held:
+                self.saved = await self.lamp.read()
+            self.held = True
+            await self._write(power=True, mireds=mireds, brightness=254)
+
+    async def release(self):
+        """Give the lamp back after holding: to how you left it, or to what the sessions need."""
+        if self.release_timer and self.release_timer is not asyncio.current_task():
+            self.release_timer.cancel()
+        self.release_timer = None
+        async with self.lock:
+            if not self.holding:
+                return
+            self.holding = False
+            if self.held and self.shown == "idle":
+                await self._restore()
+            self.held = False
+            self.dirty = True
+        await self.update()
+
+    async def _release_later(self):
+        await asyncio.sleep(HOLD_SECONDS)
+        log("finding the lamp's ends was left open; giving the lamp back")
+        await self.release()
+
+    # ----- reporting
 
     def snapshot(self):
         self.prune()
@@ -459,154 +552,9 @@ class Controller:
         }
 
     async def sweep(self):
+        """Every so often: drop silent sessions, follow quiet hours, and reconnect a lost lamp."""
         while True:
-            await asyncio.sleep(20)
+            await asyncio.sleep(RECONNECT_SECONDS)
             await self.update()
-
-
-# --------------------------------------------------------------------------- server
-
-async def serve(lamp):
-    await lamp.connect()
-    ctl = Controller(lamp)
-
-    async def api(name, data):
-        extra = {}
-        if name == "settings":
-            ctl.apply(data)
-        elif name == "test" and data.get("state") in ("all", "working", "needs", "done"):
-            ctl.test(data["state"])
-        elif name == "forget":
-            ctl.forget(str(data.get("id")))
-        elif name == "hold" and isinstance(data.get("mireds"), (int, float)):
-            ctl.hold(min(1000, max(50, round(data["mireds"]))))
-        elif name == "release":
-            await ctl.release()
-        else:
-            return "404 Not Found", extra
-        return "200 OK", extra
-
-    async def handle(reader, writer):
-        try:
-            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
-            lines = head.decode("latin-1").split("\r\n")
-            method, path, _ = lines[0].split(" ", 2)
-            headers = {}
-            for line in lines[1:]:
-                name, _, value = line.partition(":")
-                headers[name.strip().lower()] = value.strip()
-            length = int(headers.get("content-length") or 0)
-            body = await asyncio.wait_for(reader.readexactly(length), 5) if length else b""
-            path = path.split("?")[0].strip("/")
-            code, reply, kind = "200 OK", b"", "text/plain"
-            if path in STATES:
-                try:
-                    info = json.loads(body or b"{}")
-                except ValueError:
-                    info = {}
-                info = info if isinstance(info, dict) else {}
-                ctl.signal(path, info.get("session_id") or "manual", info)
-            elif path == "" and method == "GET":
-                try:
-                    reply, kind = DASHBOARD_FILE.read_bytes(), "text/html; charset=utf-8"
-                except OSError:
-                    code, reply = "404 Not Found", f"{DASHBOARD_FILE.name} is missing; keep it next to tally_ble.py".encode()
-            elif path in ("status", "api/state"):
-                reply, kind = json.dumps(ctl.snapshot(), indent=2).encode(), "application/json"
-            elif path.startswith("api/") and method == "POST":
-                # Insisting on JSON stops other websites changing settings with a plain form post.
-                if not headers.get("content-type", "").startswith("application/json"):
-                    code = "415 Unsupported Media Type"
-                else:
-                    data = json.loads(body or b"{}")
-                    code, extra = await api(path[4:], data if isinstance(data, dict) else {})
-                    reply, kind = json.dumps({**ctl.snapshot(), **extra}).encode(), "application/json"
-            else:
-                code = "404 Not Found"
-            # Claude Code treats an empty 2xx body as plain success.
-            writer.write(f"HTTP/1.1 {code}\r\nContent-Type: {kind}\r\nContent-Length: {len(reply)}\r\n"
-                         f"Cache-Control: no-store\r\nConnection: close\r\n\r\n".encode() + reply)
-            await writer.drain()
-        except Exception as err:
-            log(f"bad request ignored ({err})")
-        finally:
-            writer.close()
-
-    server = await asyncio.start_server(handle, "127.0.0.1", PORT)
-    log(f"control station on http://127.0.0.1:{PORT}/  (Ctrl+C to stop)")
-    async with server:
-        await asyncio.gather(server.serve_forever(), ctl.sweep())
-
-
-async def demo(lamp):
-    await lamp.connect()
-    await Controller(lamp).run_test("all")
-    log("demo finished; the lamp should be back how you left it")
-
-
-async def scan():
-    import HueBLE
-    from bleak import BleakScanner
-
-    log("scanning for Hue lamps for 10 s ...")
-    lights = await HueBLE.discover_lights(timeout=10)
-    if lights:
-        for d in lights:
-            print(f"  {d.address}   {d.name or '(no name)'}")
-        return
-    print("No Hue lamps recognised. Named Bluetooth devices nearby:")
-    for d in await BleakScanner.discover(timeout=8):
-        if d.name:
-            print(f"  {d.address}   {d.name}")
-
-
-def send(state):
-    body = b"{}"
-    if not sys.stdin.isatty():
-        body = sys.stdin.read().encode() or b"{}"
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/{state}", data=body,
-                                     headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=1.5).read()
-    except Exception as err:
-        print(f"Tally server not reachable ({err}). Is 'serve' running?", file=sys.stderr)
-    # always exit 0 so a hook never gets in Claude's way
-
-
-def status():
-    try:
-        print(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/status", timeout=1.5).read().decode())
-    except Exception as err:
-        print(f"Tally server not reachable ({err}). Is 'serve' running?")
-
-def main():
-    p = argparse.ArgumentParser(description="Tally: light a Hue Bluetooth lamp while Claude Code works.")
-    sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("scan", help="find Hue lamps nearby")
-    for name in ("demo", "serve"):
-        sp = sub.add_parser(name)
-        sp.add_argument("address", nargs="?", help="lamp address from 'scan'")
-        sp.add_argument("--fake", action="store_true", help="print instead of using a real lamp")
-    sg = sub.add_parser("signal", help="send a state to the running server")
-    sg.add_argument("state", choices=STATES)
-    sub.add_parser("status", help="show what the server is tracking")
-    args = p.parse_args()
-
-    if args.cmd == "signal":
-        return send(args.state)
-    if args.cmd == "status":
-        return status()
-    try:
-        if args.cmd == "scan":
-            asyncio.run(scan())
-        else:
-            if not args.fake and not args.address:
-                sys.exit(f"Give the lamp address from 'scan', or use --fake. Example: python3 tally_ble.py {args.cmd} --fake")
-            lamp = FakeLamp() if args.fake else HueLamp(args.address)
-            asyncio.run(serve(lamp) if args.cmd == "serve" else demo(lamp))
-    except KeyboardInterrupt:
-        log("stopped")
-
-
-if __name__ == "__main__":
-    main()
+            if not self.lamp.ok and not isinstance(self.lamp, NoLamp):
+                await self.connect_lamp()

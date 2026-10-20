@@ -1,2 +1,4 @@
 __pycache__/
 *.tmp
+dist/
+tally_settings.json

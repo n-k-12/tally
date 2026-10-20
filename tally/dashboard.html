@@ -145,7 +145,7 @@
   input.kelvin { --thumb: #f5f2ec; }
 
   /* options row */
-  .options { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 16px; margin-top: 24px; }
+  .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; align-items: start; }
   fieldset.card { margin: 0; padding: 14px 16px 16px; }
   fieldset legend { padding: 0 6px; margin-left: -6px; font-size: 13px; font-weight: 600; }
   .choice { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 8px 0; cursor: pointer; }
@@ -166,6 +166,38 @@
   footer.bar .hint { color: var(--muted); font-size: 12.5px; }
   footer.bar .save { margin-left: auto; font: 12px var(--mono); color: var(--faint); }
 
+  /* setup wizard: body.setup with data-step 1-3; otherwise the everyday dashboard */
+  #setup-head, .setup-panel, #back, #next { display: none; }
+  body.setup #setup-head { display: flex; }
+  body.setup #main-head, body.setup .live, body.setup #opt-lamp, body.setup #opt-claude, body.setup #looks .section-head { display: none; }
+  body.setup:not([data-step="3"]) #looks, body.setup:not([data-step="3"]) .options,
+  body.setup:not([data-step="3"]) #test-all, body.setup:not([data-step="3"]) #test-hint { display: none; }
+  body.setup[data-step="1"] .setup-panel[data-step="1"], body.setup[data-step="2"] .setup-panel[data-step="2"] { display: block; max-width: 720px; }
+  body.setup #next, body.setup:not([data-step="1"]) #back { display: inline-block; }
+  body.setup .options fieldset { grid-column: auto; }
+
+  .found, .targets { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 11px 12px;
+          border: 1px solid var(--line); border-radius: 10px; background: #171717; }
+  .item b { display: block; font-weight: 600; }
+  .item .sub { font-size: 12.5px; color: var(--muted); }
+  .item .sub code { font: 11.5px var(--mono); color: var(--faint); }
+  .item .actions { display: flex; gap: 8px; align-items: center; }
+  .tagline { font: 11.5px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
+  .tagline.good { color: var(--ok); border-color: #345a33; }
+  .tagline.warn { color: var(--warn); border-color: #6b4a22; }
+  .current { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13.5px; }
+  .current i { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+  .current.good i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .current.warn i { background: var(--warn); }
+  details.help { margin-top: 14px; font-size: 12.5px; color: #cfc9c1; }
+  details.help summary { cursor: pointer; color: var(--muted); }
+  details.help ol { margin: 10px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+  details.help a, .banner a { color: var(--accent); }
+  .note-line { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+
+  .banner { background: #2a2214; color: #ffe2bd; border-bottom: 1px solid #5a4422; padding: 10px 24px; font-size: 13px; text-align: center; }
+
   .offline { position: sticky; top: 0; z-index: 10; background: #3a2412; color: #ffd9b0; border-bottom: 1px solid #6b4220;
              padding: 10px 24px; font-size: 13px; text-align: center; }
 
@@ -182,10 +214,27 @@
 </style>
 </head>
 <body>
-<div class="offline" id="offline" hidden>Can't reach the Tally server. Is <code>tally_ble.py serve</code> still running?</div>
+<div class="offline" id="offline" hidden>Can't reach Tally. Is it still running? Look for its lamp icon in the system tray.</div>
+<div class="banner" id="update-banner" hidden>Tally <span id="update-version"></span> is available. <a id="update-link" target="_blank" rel="noopener">Download it</a></div>
 
 <div class="page">
-  <header class="top">
+  <header class="top" id="setup-head">
+    <div>
+      <div class="eyebrow" id="setup-step"></div>
+      <h1 id="setup-title"></h1>
+      <p class="lede" id="setup-lede"></p>
+    </div>
+  </header>
+
+  <section class="setup-panel" data-step="1">
+    <div class="card"><div class="scanbox"></div></div>
+  </section>
+
+  <section class="setup-panel" data-step="2">
+    <div class="card"><div class="claudebox"></div></div>
+  </section>
+
+  <header class="top" id="main-head">
     <div>
       <div class="eyebrow">Tally · Control station</div>
       <h1>Your lamp and your agents</h1>
@@ -217,7 +266,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="looks">
     <div class="section-head">
       <div class="eyebrow">Looks</div>
       <h2>How the lamp shows each state</h2>
@@ -246,13 +295,14 @@
       <div class="note" id="quiet-note" hidden>Quiet hours are on right now.</div>
     </fieldset>
 
-    <fieldset class="card">
-      <legend>Housekeeping</legend>
-      <div class="field" style="margin-top:6px">
-        <div class="lab"><span>Forget a silent session after</span><span class="val" id="forget-val"></span></div>
-        <input type="range" id="forget" min="5" max="480" step="5" aria-label="Forget a silent session after, in minutes">
-      </div>
-      <p class="muted" style="font-size:12.5px;margin:12px 0 0">Covers sessions that closed without saying goodbye, such as a terminal that was killed.</p>
+    <fieldset class="card" id="opt-claude">
+      <legend>Claude Code</legend>
+      <div class="claudebox"></div>
+    </fieldset>
+
+    <fieldset class="card" id="opt-lamp">
+      <legend>Lamp</legend>
+      <div class="scanbox"></div>
       <div class="field">
         <div class="lab"><span>Colour range</span><span class="val" id="range-val"></span></div>
         <div class="measure" id="measure-row">
@@ -271,12 +321,19 @@
           </div>
         </div>
       </div>
+      <div class="field">
+        <div class="lab"><span>Forget a silent session after</span><span class="val" id="forget-val"></span></div>
+        <input type="range" id="forget" min="5" max="480" step="5" aria-label="Forget a silent session after, in minutes">
+        <p class="muted" style="font-size:12.5px;margin:10px 0 0">For sessions that closed without saying goodbye, such as a terminal that was killed.</p>
+      </div>
     </fieldset>
   </section>
 
   <footer class="bar">
+    <button class="btn" id="back" type="button">Back</button>
+    <button class="btn primary" id="next" type="button">Next</button>
     <button class="btn primary" id="test-all" type="button">▶ Test on lamp</button>
-    <span class="hint">Plays Working, Needs you, then Finished.</span>
+    <span class="hint" id="test-hint">Plays Working, Needs you, then Finished.</span>
     <span class="save" id="save"></span>
   </footer>
 </div>
@@ -287,6 +344,7 @@ const BEHAVIOURS = ["steady", "breathe", "pulse", "flash"];
 const PRESETS = [2200, 2700, 3000, 4000, 6500];
 const NAMES = { working: "Working", needs: "Needs you", done: "Finished", idle: "Idle" };
 const SESSION_LABEL = { working: "Working", needs: "Waiting for your approval", idle: "Idle" };
+const LAMP_STATUS = { connected: "connected", connecting: "connecting…", "not found": "not found", unreachable: "can't connect" };
 const LAMP = '<div class="shade"></div><div class="lit"><div class="anim"><div class="glow"></div><div class="lit-shade"></div></div></div><div class="base"></div>';
 const cap = s => s[0].toUpperCase() + s.slice(1);
 
@@ -638,8 +696,9 @@ function renderNow() {
 
   const pill = $("#lamp-pill");
   pill.classList.toggle("bad", !lamp.connected);
-  $("span", pill).textContent = lamp.kind === "fake" ? "Fake lamp · printing to terminal"
-                              : `${lamp.name} · ${lamp.connected ? "connected" : "reconnecting"}`;
+  $("span", pill).textContent = lamp.kind === "none" ? "No lamp chosen" :
+                                lamp.kind === "fake" ? "Fake lamp · printing to terminal" :
+                                `${lamp.name} · ${LAMP_STATUS[lamp.status] || lamp.status}`;
   $("#quiet-note").hidden = !snap.quiet_now;
 }
 
@@ -679,10 +738,174 @@ $("#sessions").addEventListener("click", async e => {
   try { snap = await api("/api/forget", { id: btn.closest(".row").dataset.id }); renderLive(); } catch {}
 });
 
+// ---------------------------------------------------------------- choosing a lamp
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+let scan = { busy: false, lamps: null, error: "" };
+
+const SCANBOX = `
+  <div class="current"><i></i><span></span></div>
+  <div class="measure"><button class="btn" type="button" data-scan>Scan for lamps</button><span class="muted scan-note"></span></div>
+  <div class="found"></div>
+  <details class="help">
+    <summary>Lamp not showing up, or won't connect?</summary>
+    <ol>
+      <li>Check Bluetooth is on: <a href="ms-settings:bluetooth">open Bluetooth settings</a>.</li>
+      <li>Make the lamp visible. In the Hue app, look for the option to make it visible to other devices
+          (often under Settings → Voice assistants), or switch it off and on at the wall.</li>
+      <li>Pair it with Windows: in Bluetooth settings choose <b>Add device</b> → <b>Bluetooth</b>, then pick the lamp.</li>
+      <li>Come back and scan again.</li>
+    </ol>
+  </details>`;
+
+function renderScan() {
+  const lamp = snap.lamp;
+  const chosen = cfg.lamp.address;
+  document.querySelectorAll(".scanbox").forEach(box => {
+    const cur = $(".current", box);
+    const good = lamp.status === "connected", bad = ["not found", "unreachable"].includes(lamp.status);
+    cur.className = "current" + (good ? " good" : bad ? " warn" : "");
+    $("span", cur).textContent = lamp.kind === "none" ? "No lamp chosen yet."
+      : lamp.status === "not found" ? `${lamp.name}: not found. Is it switched on and close by?`
+      : lamp.status === "unreachable" ? `${lamp.name}: can't connect. It may need pairing; see below.`
+      : `${lamp.name}: ${LAMP_STATUS[lamp.status] || lamp.status}`;
+    $("[data-scan]", box).disabled = scan.busy;
+    $(".scan-note", box).textContent = scan.busy ? "Looking for Hue lamps nearby…" : scan.error ||
+      (scan.lamps && !scan.lamps.length ? "No Hue lamps found. See the help below." : "");
+    const html = (scan.lamps || []).map(l => `
+      <div class="item"><div><b>${esc(l.name)}</b><span class="sub"><code>${esc(l.address)}</code></span></div>
+        <div class="actions">${l.address === chosen ? '<span class="tagline good">In use</span>'
+          : `<button class="btn" type="button" data-use="${esc(l.address)}" data-name="${esc(l.name)}">Use this lamp</button>`}</div>
+      </div>`).join("");
+    const found = $(".found", box);
+    if (found.dataset.html !== html) {   // rebuilding only on change keeps clicks from being lost
+      found.innerHTML = html;
+      found.dataset.html = html;
+    }
+  });
+}
+
+document.addEventListener("click", async e => {
+  if (e.target.closest("[data-scan]")) {
+    scan = { busy: true, lamps: scan.lamps, error: "" };
+    renderScan();
+    try {
+      const res = await api("/api/scan", {});
+      scan = { busy: false, lamps: res.lamps, error: res.scan_error || "" };
+    } catch {
+      scan = { busy: false, lamps: null, error: "Couldn't reach Tally." };
+    }
+    renderScan();
+  }
+  const use = e.target.closest("[data-use]");
+  if (use) {
+    cfg.lamp = { ...cfg.lamp, address: use.dataset.use, name: use.dataset.name };
+    try { snap = await api("/api/lamp", { address: use.dataset.use, name: use.dataset.name }); } catch {}
+    renderLive();
+  }
+});
+
+// ---------------------------------------------------------------- connecting Claude Code
+
+let claude = { list: null, busy: false, note: "" };
+
+const CLAUDEBOX = `
+  <div class="targets"></div>
+  <div class="measure" style="margin-top:12px"><button class="ghost" type="button" data-claude-refresh>Look again</button><span class="muted claude-note"></span></div>`;
+
+const CLAUDE_STATE = {
+  connected: ["Connected", "good"], outdated: ["Needs updating", "warn"], "not connected": ["Not connected", ""],
+};
+
+function renderClaude() {
+  document.querySelectorAll(".claudebox").forEach(box => {
+    const list = claude.list;
+    $(".targets", box).innerHTML = !list ? "" : list.map(t => {
+      const [label, tone] = CLAUDE_STATE[t.state] || ["Can't read settings", "warn"];
+      const action = t.state === "connected" ? "disconnect" : "connect";
+      const button = t.state === "connected" ? "Disconnect" : t.state === "outdated" ? "Update" : "Connect";
+      return `<div class="item"><div><b>${esc(t.label)}</b><span class="sub">${t.claude ? "Claude Code found" : "Claude Code not found here yet"}</span></div>
+        <div class="actions"><span class="tagline ${tone}">${label}</span>
+          <button class="btn${action === "connect" ? " primary" : ""}" type="button" data-claude="${action}" data-id="${esc(t.id)}" ${claude.busy ? "disabled" : ""}>${button}</button></div></div>`;
+    }).join("");
+    $("[data-claude-refresh]", box).disabled = claude.busy;
+    $(".claude-note", box).textContent = claude.note ||
+      (claude.busy && !list ? "Looking for Claude Code on Windows and in WSL… this can take a few seconds." : "");
+  });
+}
+
+async function loadClaude(action = "status", id) {
+  claude.busy = true;
+  claude.note = "";
+  renderClaude();
+  try {
+    const res = await api("/api/claude", { action, id });
+    claude.list = res.claude;
+    claude.note = res.claude_error || "";
+  } catch {
+    claude.note = "Couldn't reach Tally.";
+  }
+  claude.busy = false;
+  renderClaude();
+}
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-claude]");
+  if (b) loadClaude(b.dataset.claude, b.dataset.id);
+  if (e.target.closest("[data-claude-refresh]")) loadClaude("refresh");
+});
+
+// ---------------------------------------------------------------- setup wizard
+
+const STEPS = {
+  1: ["Find your lamp", "Tally talks to a Philips Hue Bluetooth lamp directly, without a Hue Bridge. Switch the lamp on, then scan."],
+  2: ["Connect Claude Code", "Tally adds a few hooks to Claude Code's settings so each session can tell the lamp what it's doing. Your other settings are kept, and a backup is saved next to the file."],
+  3: ["How the lamp shows each state", "These are the defaults. Change any of them, then press Test to see the whole sequence on your lamp."],
+};
+let step = 1;
+
+function setStep(n) {
+  step = n;
+  document.body.dataset.step = n;
+  $("#setup-step").textContent = `Setup · Step ${n} of 3`;
+  $("#setup-title").textContent = STEPS[n][0];
+  $("#setup-lede").textContent = STEPS[n][1];
+  $("#test-all").classList.toggle("primary", n !== 3);
+  nextLabel();
+  if (n === 2 && !claude.list && !claude.busy) loadClaude();
+  scrollTo(0, 0);
+}
+
+function nextLabel() {
+  $("#next").textContent = step === 3 ? "Finish setup" : step === 1 && !cfg.lamp.address ? "Skip for now" : "Next";
+}
+
+function initSetup() {
+  $("#back").addEventListener("click", () => setStep(step - 1));
+  $("#next").addEventListener("click", async () => {
+    if (step < 3) return setStep(step + 1);
+    cfg.setup_done = true;
+    try { snap = await api("/api/settings", { setup_done: true }); } catch {}
+    document.body.classList.remove("setup");
+    $("#test-all").classList.add("primary");
+    if (!claude.list) loadClaude();
+    renderLive();
+    scrollTo(0, 0);
+  });
+}
+
 function renderLive() {
   renderNow();
   renderSessions();
   renderRange();
+  renderScan();
+  if (document.body.classList.contains("setup")) nextLabel();
+  const update = snap.app.update;
+  $("#update-banner").hidden = !update;
+  if (update) {
+    $("#update-version").textContent = update.version;
+    $("#update-link").href = update.url;
+  }
 }
 
 function init() {
@@ -693,8 +916,17 @@ function init() {
     states.appendChild(buildCard(name));
     syncCard(name);
   }
+  document.querySelectorAll(".scanbox").forEach(b => { b.innerHTML = SCANBOX; });
+  document.querySelectorAll(".claudebox").forEach(b => { b.innerHTML = CLAUDEBOX; });
   initOptions();
   syncOptions();
+  initSetup();
+  if (!snap.app.setup_done) {
+    document.body.classList.add("setup");
+    setStep(1);
+  } else {
+    loadClaude();
+  }
 }
 
 async function poll() {
