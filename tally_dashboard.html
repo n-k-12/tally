@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tally</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121212;
+    --card: #1b1b1b;
+    --card-2: #232323;
+    --line: #2a2a2a;
+    --line-2: #383838;
+    --well: #0e0e0e;
+    --text: #eeeae4;
+    --muted: #9b958d;
+    --faint: #6a655f;
+    --accent: #f6b36b;
+    --accent-ink: #2b1a07;
+    --ok: #8fd18a;
+    --warn: #f0a04b;
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, Menlo, monospace;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  .page { max-width: 1120px; margin: 0 auto; padding: 36px 24px 40px; }
+  .eyebrow { font: 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-weight: 500; font-size: clamp(28px, 4.2vw, 38px); letter-spacing: -.01em; margin: 12px 0 8px; }
+  h2 { font-weight: 500; font-size: 22px; letter-spacing: -.005em; margin: 0 0 4px; }
+  .lede { color: #cfc9c1; max-width: 560px; margin: 0; }
+  .muted { color: var(--muted); }
+
+  header.top { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; justify-content: space-between; margin-bottom: 28px; }
+  .top-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--line-2);
+          border-radius: 999px; font: 12px/1 var(--mono); color: #d8d2ca; background: #171717; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .pill.bad i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+  .btn { border: 1px solid var(--line-2); background: #191919; border-radius: 10px; padding: 10px 18px; font-weight: 600; font-size: 13px; }
+  .btn:hover { background: #222; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.primary:hover { background: #ffc283; }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
+  .ghost { border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 9px; font-size: 12px; }
+  .ghost:hover { border-color: var(--line-2); color: var(--text); background: #202020; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
+
+  /* live row */
+  .live { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 16px; margin-bottom: 40px; }
+  .now .state-name { font-size: 20px; font-weight: 600; margin: 14px 0 2px; display: flex; align-items: center; gap: 8px; }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .count { font: 12px var(--mono); color: var(--muted); }
+
+  .sessions { display: flex; flex-direction: column; gap: 6px; }
+  .row { display: grid; grid-template-columns: 14px 1fr auto; gap: 12px; align-items: start; padding: 11px 12px;
+         border: 1px solid var(--line); border-radius: 10px; background: #171717; }
+  .row[data-state="needs"] { border-color: #5a4022; background: linear-gradient(90deg, rgb(246 179 107 / .09), #171717 60%); }
+  .row .sdot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: #4d4943; }
+  .row[data-state="working"] .sdot { background: #f4c48c; box-shadow: 0 0 10px rgb(244 196 140 / .7); }
+  .row[data-state="needs"] .sdot { background: var(--accent); animation: blink 1.4s ease-in-out infinite; }
+  .row .line { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .row .proj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sid { font: 11px var(--mono); color: var(--faint); }
+  .row .sub { font-size: 12.5px; color: var(--muted); }
+  .row[data-state="needs"] .sub { color: var(--accent); }
+  .row .msg { font-size: 12.5px; color: #d8d2ca; margin-top: 2px; }
+  .row .forget { opacity: 0; transition: opacity .15s; }
+  .row:hover .forget, .row .forget:focus-visible { opacity: 1; }
+  @media (hover: none) { .row .forget { opacity: 1; } }
+  .empty { border: 1px dashed var(--line-2); border-radius: 10px; padding: 26px 16px; text-align: center; color: var(--muted); }
+  .empty code { font: 12px var(--mono); color: #cfc9c1; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  /* lamp preview */
+  .well { position: relative; background: var(--well); border: 1px solid #1d1d1d; border-radius: 10px; height: 150px;
+          overflow: hidden; display: flex; align-items: flex-end; justify-content: center; }
+  .well .tag { position: absolute; top: 11px; left: 13px; font: 11px var(--mono); color: var(--muted); z-index: 2; }
+  .well .try { position: absolute; top: 6px; right: 6px; z-index: 2; }
+  .now .well { height: 186px; }
+
+  .lamp { position: relative; width: 220px; height: 124px; flex: none; }
+  .now .lamp { transform: scale(1.22); transform-origin: 50% 100%; }
+  .lamp .shade, .lamp .lit-shade { position: absolute; left: 50%; bottom: 24px; width: 96px; height: 48px; transform: translateX(-50%);
+                                   border-radius: 48px 48px 9px 9px / 46px 46px 9px 9px; }
+  .lamp .shade { background: linear-gradient(#3a322b, #27231f); }
+  .lamp .lit, .lamp .anim { position: absolute; inset: 0; }
+  .lamp .lit { opacity: var(--b, 1); transition: opacity .35s; }
+  .lamp .glow { position: absolute; left: 50%; bottom: -26px; width: 300px; height: 210px; transform: translateX(-50%);
+                background: radial-gradient(closest-side, rgb(var(--c) / .55), rgb(var(--c) / .18) 55%, transparent); }
+  .lamp .lit-shade { background: radial-gradient(130% 95% at 50% 22%, rgb(255 255 255 / .6), rgb(var(--c)) 62%);
+                     box-shadow: 0 0 22px rgb(var(--c) / .65); }
+  .lamp .base { position: absolute; left: 50%; bottom: 15px; width: 90px; height: 12px; transform: translateX(-50%);
+                border-radius: 4px 4px 45px 45px / 4px 4px 12px 12px; background: linear-gradient(#4a505b, #2a2e35); }
+  .lamp[data-beh="off"] .lit { opacity: 0; }
+  .lamp[data-beh="breathe"] .anim { animation: breathe var(--period) ease-in-out infinite; }
+  .lamp[data-beh="pulse"] .anim { animation: pulse var(--period) linear infinite; }
+  .lamp[data-beh="flash"] .anim { animation: flash var(--period) linear infinite; }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+  @keyframes pulse { 0%, 38% { opacity: 1; } 50%, 88% { opacity: .22; } 100% { opacity: 1; } }
+  @keyframes flash { 0%, 49% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+  /* state cards */
+  .section-head { margin-bottom: 18px; }
+  .states { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .state h3 { margin: 16px 0 2px; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(var(--c, 246 179 107)); box-shadow: 0 0 8px rgb(var(--c, 246 179 107) / .8); }
+  .state .desc { margin: 0; color: var(--muted); font-size: 12.5px; min-height: 18px; }
+  .field { margin-top: 16px; }
+  .lab { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .val { font: 12px var(--mono); color: var(--text); }
+
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 4px; background: var(--well);
+         border: 1px solid var(--line); border-radius: 10px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); border-radius: 7px; padding: 7px 0; font-size: 12.5px; }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: #2d2d2d; color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px #3c3c3c; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line-2);
+          background: var(--card-2); font-size: 12px; font-weight: 600; }
+  .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--dot); }
+  .chip:hover { border-color: #555; }
+  .chip[aria-pressed="true"] { border-color: #e2ddd5; box-shadow: 0 0 0 1px #e2ddd5 inset; }
+
+  input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 0; background: transparent; }
+  input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 6px; background: var(--track); }
+  input[type="range"]::-moz-range-track { height: 6px; border-radius: 6px; background: var(--track); }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -5px; border-radius: 50%;
+                                              background: var(--thumb, var(--accent)); border: 3px solid var(--card);
+                                              box-shadow: 0 0 0 1px var(--thumb, var(--accent)); }
+  input[type="range"]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--thumb, var(--accent));
+                                          border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--thumb, var(--accent)); }
+  input[type="range"] { --track: linear-gradient(90deg, var(--accent) var(--p, 50%), #2f2f2f var(--p, 50%)); }
+  input.kelvin { --thumb: #f5f2ec; }
+
+  /* options row */
+  .options { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 16px; margin-top: 24px; }
+  fieldset.card { margin: 0; padding: 14px 16px 16px; }
+  fieldset legend { padding: 0 6px; margin-left: -6px; font-size: 13px; font-weight: 600; }
+  .choice { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 8px 0; cursor: pointer; }
+  .choice b { display: block; font-weight: 600; font-size: 13.5px; }
+  .choice span { color: var(--muted); font-size: 12.5px; }
+  input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 2px 0 0; }
+  .times { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .times label { font-size: 12px; color: var(--muted); display: grid; gap: 6px; }
+  input[type="time"] { background: var(--well); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 10px; font: 13px var(--mono); width: 100%; }
+  input[type="time"]:disabled { opacity: .45; }
+  .note { margin-top: 10px; font-size: 12px; color: var(--accent); }
+
+  footer.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line); }
+  footer.bar .hint { color: var(--muted); font-size: 12.5px; }
+  footer.bar .save { margin-left: auto; font: 12px var(--mono); color: var(--faint); }
+
+  .offline { position: sticky; top: 0; z-index: 10; background: #3a2412; color: #ffd9b0; border-bottom: 1px solid #6b4220;
+             padding: 10px 24px; font-size: 13px; text-align: center; }
+
+  @media (max-width: 900px) {
+    .live, .options { grid-template-columns: 1fr; }
+    .states { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 480px) {
+    .page { padding: 24px 16px 32px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lamp .anim, .row .sdot { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="offline" id="offline" hidden>Can't reach the Tally server. Is <code>tally_ble.py serve</code> still running?</div>
+
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="eyebrow">Tally · Control station</div>
+      <h1>Your lamp and your agents</h1>
+      <p class="lede">See every Claude Code session and choose how the lamp shows each state. Changes save as you make them.</p>
+    </div>
+    <div class="top-actions">
+      <span class="pill" id="lamp-pill"><i></i><span>Connecting…</span></span>
+      <button class="btn" id="pause" type="button" aria-pressed="false">Pause lamp</button>
+    </div>
+  </header>
+
+  <section class="live">
+    <div class="card now">
+      <div class="well">
+        <span class="tag">Live</span>
+        <div class="lamp" id="now-lamp" data-beh="off"></div>
+      </div>
+      <div class="state-name"><i class="dot" id="now-dot" style="--c: 90 86 80"></i><span id="now-title">Idle</span></div>
+      <div class="muted" id="now-sub">Waiting for the server…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Sessions</h3>
+        <span class="count" id="sess-count"></span>
+      </div>
+      <div class="sessions" id="sessions"></div>
+      <div class="empty" id="sess-empty">No Claude Code sessions yet. Start one and it will appear here.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">Looks</div>
+      <h2>How the lamp shows each state</h2>
+      <p class="lede muted">Press Test on a card to see that state on your lamp.</p>
+    </div>
+    <div class="states" id="states"></div>
+  </section>
+
+  <section class="options">
+    <fieldset class="card">
+      <legend>When several agents run at once</legend>
+      <label class="choice"><input type="radio" name="several" value="urgent">
+        <div><b>Show the most urgent state</b><span>Needs you comes first, then Working. Finished plays when the last agent is done.</span></div></label>
+      <label class="choice"><input type="radio" name="several" value="latest">
+        <div><b>Show the latest change</b><span>Whichever agent changed state most recently. Finished plays every time one is done.</span></div></label>
+    </fieldset>
+
+    <fieldset class="card">
+      <legend>Quiet hours</legend>
+      <label class="choice"><input type="checkbox" id="quiet-on">
+        <div><b>Leave the lamp alone at night</b><span>Tally won't change the lamp during these hours.</span></div></label>
+      <div class="times">
+        <label>From<input type="time" id="quiet-from"></label>
+        <label>Until<input type="time" id="quiet-until"></label>
+      </div>
+      <div class="note" id="quiet-note" hidden>Quiet hours are on right now.</div>
+    </fieldset>
+
+    <fieldset class="card">
+      <legend>Housekeeping</legend>
+      <div class="field" style="margin-top:6px">
+        <div class="lab"><span>Forget a silent session after</span><span class="val" id="forget-val"></span></div>
+        <input type="range" id="forget" min="5" max="480" step="5" aria-label="Forget a silent session after, in minutes">
+      </div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">Covers sessions that closed without saying goodbye, such as a terminal that was killed.</p>
+    </fieldset>
+  </section>
+
+  <footer class="bar">
+    <button class="btn primary" id="test-all" type="button">▶ Test on lamp</button>
+    <span class="hint">Plays Working, Needs you, then Finished.</span>
+    <span class="save" id="save"></span>
+  </footer>
+</div>
+
+<script>
+const $ = (sel, el = document) => el.querySelector(sel);
+const BEHAVIOURS = ["steady", "breathe", "pulse", "flash"];
+const PRESETS = [2200, 2700, 3000, 4000, 6500];
+const NAMES = { working: "Working", needs: "Needs you", done: "Finished", idle: "Idle" };
+const SESSION_LABEL = { working: "Working", needs: "Waiting for your approval", idle: "Idle" };
+const LAMP = '<div class="shade"></div><div class="lit"><div class="anim"><div class="glow"></div><div class="lit-shade"></div></div></div><div class="base"></div>';
+const cap = s => s[0].toUpperCase() + s.slice(1);
+
+let cfg = null;       // settings as this page knows them; the page is the source of truth once loaded
+let snap = null;      // latest /api/state
+let range = [2000, 6500];
+
+// Colour temperature to the colours the Hue app's wheel uses: red-orange at the
+// warm end, white around 5000 K, sky blue at the cool end. Brighter than physics,
+// so the previews read clearly on a dark screen.
+const KELVIN_STOPS = [
+  [2000, [255, 84, 22]], [2200, [255, 116, 36]], [2700, [255, 160, 66]], [3000, [255, 190, 102]],
+  [3500, [255, 218, 152]], [4000, [255, 236, 200]], [4500, [255, 247, 234]], [5000, [255, 255, 255]],
+  [5600, [214, 236, 255]], [6000, [166, 214, 255]], [6500, [110, 188, 255]],
+];
+function kelvinRGB(k) {
+  const s = KELVIN_STOPS;
+  if (k <= s[0][0]) return s[0][1].join(" ");
+  for (let i = 1; i < s.length; i++) {
+    if (k <= s[i][0]) {
+      const [k0, c0] = s[i - 1], [k1, c1] = s[i];
+      const f = (k - k0) / (k1 - k0);
+      return c0.map((v, j) => Math.round(v + (c1[j] - v) * f)).join(" ");
+    }
+  }
+  return s[s.length - 1][1].join(" ");
+}
+
+function kelvinTrack() {
+  const stops = [];
+  for (let i = 0; i <= 16; i++) {
+    const k = range[0] + (range[1] - range[0]) * i / 16;
+    stops.push(`rgb(${kelvinRGB(k)}) ${i * 6.25}%`);
+  }
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
+function paintLamp(el, look) {
+  if (!el.firstChild) el.innerHTML = LAMP;
+  if (!look) { el.dataset.beh = "off"; return; }
+  el.style.setProperty("--c", kelvinRGB(look.kelvin));
+  el.style.setProperty("--b", (0.3 + 0.7 * look.brightness / 100).toFixed(2));
+  el.style.setProperty("--period", look.period + "s");
+  el.dataset.beh = look.behaviour;
+}
+
+function fillTrack(input) {
+  const p = (input.value - input.min) / (input.max - input.min) * 100;
+  input.style.setProperty("--p", p + "%");
+}
+
+function ago(s) {
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`;
+}
+
+// ---------------------------------------------------------------- server
+
+async function api(path, body) {
+  const opts = body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(`${res.status}`);
+  return res.json();
+}
+
+let pending = {}, saveTimer = null;
+function merge(into, from) {
+  for (const [k, v] of Object.entries(from)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) merge(into[k] ??= {}, v);
+    else into[k] = v;
+  }
+  return into;
+}
+function save(change) {
+  merge(pending, change);
+  $("#save").textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const body = pending;
+    pending = {};
+    try {
+      snap = await api("/api/settings", body);
+      $("#save").textContent = "Saved";
+      renderLive();
+    } catch {
+      $("#save").textContent = "Couldn't save. Is the server running?";
+    }
+  }, 250);
+}
+
+async function test(state) {
+  try {
+    await api("/api/test", { state });
+    $("#save").textContent = state === "all" ? "Playing the whole sequence on the lamp…" : `Showing ${NAMES[state]} on the lamp…`;
+  } catch {
+    $("#save").textContent = "Couldn't reach the lamp server.";
+  }
+}
+
+// ---------------------------------------------------------------- state cards
+
+function buildCard(name) {
+  const card = document.createElement("article");
+  card.className = "card state";
+  card.dataset.state = name;
+  card.innerHTML = `
+    <div class="well">
+      <span class="tag"></span>
+      <button class="ghost try" type="button">▶ Test</button>
+      <div class="lamp"></div>
+    </div>
+    <h3><i class="dot"></i>${NAMES[name]}</h3>
+    <p class="desc"></p>
+    <div class="field">
+      <div class="lab">Behaviour</div>
+      <div class="seg" role="group" aria-label="Behaviour">
+        ${BEHAVIOURS.map(b => `<button type="button" data-b="${b}">${cap(b)}</button>`).join("")}
+      </div>
+    </div>
+    <div class="field">
+      <div class="lab"><span>Colour</span><span class="val kval"></span></div>
+      <div class="chips">
+        ${PRESETS.map(k => `<button type="button" class="chip" data-k="${k}" style="--dot: rgb(${kelvinRGB(k)})"><i></i>${k} K</button>`).join("")}
+      </div>
+      <input type="range" class="kelvin" step="50" aria-label="Colour temperature in kelvin">
+    </div>
+    <div class="field">
+      <div class="lab"><span>Brightness</span><span class="val bval"></span></div>
+      <input type="range" class="bright" min="1" max="100" step="1" aria-label="Brightness in percent">
+    </div>
+    <div class="field cycle">
+      <div class="lab"><span>Cycle</span><span class="val pval"></span></div>
+      <input type="range" class="period" min="0.4" max="10" step="0.1" aria-label="Cycle length in seconds">
+    </div>
+    ${name === "done" ? `
+    <div class="field">
+      <div class="lab"><span>Show for</span><span class="val sval"></span></div>
+      <input type="range" class="seconds" min="0.5" max="10" step="0.5" aria-label="How long to show Finished, in seconds">
+    </div>` : ""}`;
+
+  const kelvin = $(".kelvin", card);
+  kelvin.min = range[0];
+  kelvin.max = range[1];
+  kelvin.style.setProperty("--track", kelvinTrack());
+
+  const set = (key, value) => {
+    cfg.states[name][key] = value;
+    syncCard(name);
+    if (snap && snap.lamp.showing === name) renderNow();
+    save({ states: { [name]: { [key]: value } } });
+  };
+  $(".seg", card).addEventListener("click", e => { const b = e.target.closest("button"); if (b) set("behaviour", b.dataset.b); });
+  $(".chips", card).addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) set("kelvin", +c.dataset.k); });
+  kelvin.addEventListener("input", () => set("kelvin", +kelvin.value));
+  $(".bright", card).addEventListener("input", e => set("brightness", +e.target.value));
+  $(".period", card).addEventListener("input", e => set("period", +e.target.value));
+  if (name === "done") $(".seconds", card).addEventListener("input", e => set("seconds", +e.target.value));
+  $(".try", card).addEventListener("click", () => test(name));
+  return card;
+}
+
+function syncCard(name) {
+  const card = $(`.state[data-state="${name}"]`);
+  const look = cfg.states[name];
+  const animated = look.behaviour !== "steady";
+
+  card.style.setProperty("--c", kelvinRGB(look.kelvin));
+  paintLamp($(".lamp", card), look);
+  let tag = animated ? `${cap(look.behaviour)} · ${look.period} s` : "Steady";
+  if (name === "done") tag += `, ${look.seconds} s, then back`;
+  $(".tag", card).textContent = tag;
+
+  const desc = {
+    working: "While any agent is working.",
+    needs: "When an agent is waiting for your approval.",
+    done: cfg.several === "latest" ? "Whenever an agent finishes, then back." : "When the last agent finishes, then back to how you left it.",
+  };
+  $(".desc", card).textContent = desc[name];
+
+  card.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.b === look.behaviour));
+  card.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", Math.abs(+c.dataset.k - look.kelvin) < 25));
+
+  const kelvin = $(".kelvin", card);
+  kelvin.value = look.kelvin;
+  $(".kval", card).textContent = `${look.kelvin} K`;
+  const bright = $(".bright", card);
+  bright.value = look.brightness;
+  fillTrack(bright);
+  $(".bval", card).textContent = `${look.brightness} %`;
+
+  $(".cycle", card).hidden = !animated;
+  const period = $(".period", card);
+  period.value = look.period;
+  fillTrack(period);
+  $(".pval", card).textContent = `${look.period} s`;
+
+  if (name === "done") {
+    const secs = $(".seconds", card);
+    secs.value = look.seconds;
+    fillTrack(secs);
+    $(".sval", card).textContent = `${look.seconds} s`;
+  }
+}
+
+// ---------------------------------------------------------------- options
+
+function initOptions() {
+  document.querySelectorAll('input[name="several"]').forEach(r => r.addEventListener("change", () => {
+    cfg.several = r.value;
+    syncCard("done");
+    save({ several: r.value });
+  }));
+  const quietChange = () => {
+    cfg.quiet = { enabled: $("#quiet-on").checked, from: $("#quiet-from").value || cfg.quiet.from, until: $("#quiet-until").value || cfg.quiet.until };
+    syncOptions();
+    save({ quiet: cfg.quiet });
+  };
+  ["#quiet-on", "#quiet-from", "#quiet-until"].forEach(id => $(id).addEventListener("change", quietChange));
+  $("#forget").addEventListener("input", e => {
+    cfg.forget_after = +e.target.value;
+    syncOptions();
+    save({ forget_after: cfg.forget_after });
+  });
+  $("#pause").addEventListener("click", () => {
+    cfg.paused = !cfg.paused;
+    syncOptions();
+    save({ paused: cfg.paused });
+  });
+  $("#test-all").addEventListener("click", () => test("all"));
+}
+
+function syncOptions() {
+  document.querySelectorAll('input[name="several"]').forEach(r => { r.checked = r.value === cfg.several; });
+  $("#quiet-on").checked = cfg.quiet.enabled;
+  $("#quiet-from").value = cfg.quiet.from;
+  $("#quiet-until").value = cfg.quiet.until;
+  $("#quiet-from").disabled = $("#quiet-until").disabled = !cfg.quiet.enabled;
+  const forget = $("#forget");
+  forget.value = cfg.forget_after;
+  fillTrack(forget);
+  $("#forget-val").textContent = cfg.forget_after < 60 ? `${cfg.forget_after} min` : `${Math.floor(cfg.forget_after / 60)} h ${cfg.forget_after % 60 ? cfg.forget_after % 60 + " min" : ""}`.trim();
+  const pause = $("#pause");
+  pause.textContent = cfg.paused ? "Resume lamp" : "Pause lamp";
+  pause.classList.toggle("on", cfg.paused);
+  pause.setAttribute("aria-pressed", cfg.paused);
+}
+
+// ---------------------------------------------------------------- live
+
+function renderNow() {
+  const lamp = snap.lamp;
+  const showing = lamp.showing;
+  const look = showing === "idle" ? null : cfg.states[showing];
+  paintLamp($("#now-lamp"), look);
+  $("#now-dot").style.setProperty("--c", look ? kelvinRGB(look.kelvin) : "90 86 80");
+
+  let title = NAMES[showing] || showing;
+  if (lamp.testing) title = `Testing · ${title}`;
+  else if (showing === "idle" && cfg.paused) title = "Paused";
+  else if (showing === "idle" && snap.quiet_now) title = "Quiet hours";
+  $("#now-title").textContent = title;
+
+  const n = s => snap.sessions.filter(x => x.state === s).length;
+  const parts = [];
+  if (n("needs")) parts.push(`${n("needs")} waiting for you`);
+  if (n("working")) parts.push(`${n("working")} working`);
+  if (n("idle")) parts.push(`${n("idle")} idle`);
+  let sub = parts.join(" · ");
+  if (showing === "idle") sub = cfg.paused ? "Tally won't touch the lamp until you resume."
+                               : snap.quiet_now ? "Tally is leaving the lamp alone for the night."
+                               : "The lamp is yours until an agent starts.";
+  $("#now-sub").textContent = sub;
+
+  const pill = $("#lamp-pill");
+  pill.classList.toggle("bad", !lamp.connected);
+  $("span", pill).textContent = lamp.kind === "fake" ? "Fake lamp · printing to terminal"
+                              : `${lamp.name} · ${lamp.connected ? "connected" : "reconnecting"}`;
+  $("#quiet-note").hidden = !snap.quiet_now;
+}
+
+function renderSessions() {
+  const box = $("#sessions");
+  const order = { needs: 0, working: 1, idle: 2 };
+  const list = [...snap.sessions].sort((a, b) => order[a.state] - order[b.state]);
+  $("#sess-empty").hidden = list.length > 0;
+  $("#sess-count").textContent = list.length ? `${list.length} open` : "";
+
+  const keep = new Set();
+  list.forEach((s, i) => {
+    let row = box.querySelector(`.row[data-id="${CSS.escape(s.id)}"]`);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "row";
+      row.dataset.id = s.id;
+      row.innerHTML = '<i class="sdot"></i><div><div class="line"><span class="proj"></span><span class="sid"></span></div>' +
+                      '<div class="sub"></div><div class="msg"></div></div><button class="ghost forget" type="button">Forget</button>';
+    }
+    row.dataset.state = s.state;
+    $(".proj", row).textContent = s.project || "Unknown project";
+    $(".proj", row).title = s.cwd;
+    $(".sid", row).textContent = s.id.slice(0, 8);
+    $(".sub", row).textContent = `${SESSION_LABEL[s.state]} · ${ago(s.for)}`;
+    $(".msg", row).textContent = s.message;
+    $(".msg", row).hidden = !s.message;
+    if (box.children[i] !== row) box.insertBefore(row, box.children[i] || null);
+    keep.add(s.id);
+  });
+  [...box.children].forEach(row => { if (!keep.has(row.dataset.id)) row.remove(); });
+}
+
+$("#sessions").addEventListener("click", async e => {
+  const btn = e.target.closest(".forget");
+  if (!btn) return;
+  try { snap = await api("/api/forget", { id: btn.closest(".row").dataset.id }); renderLive(); } catch {}
+});
+
+function renderLive() {
+  renderNow();
+  renderSessions();
+}
+
+function init() {
+  cfg = structuredClone(snap.settings);
+  range = snap.lamp.kelvin;
+  const states = $("#states");
+  for (const name of ["working", "needs", "done"]) {
+    states.appendChild(buildCard(name));
+    syncCard(name);
+  }
+  initOptions();
+  syncOptions();
+}
+
+async function poll() {
+  try {
+    snap = await api("/api/state");
+    $("#offline").hidden = true;
+    if (!cfg) init();
+    renderLive();
+  } catch {
+    $("#offline").hidden = false;
+  }
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

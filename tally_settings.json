@@ -1,0 +1,31 @@
+{
+  "states": {
+    "working": {
+      "behaviour": "steady",
+      "kelvin": 6500,
+      "brightness": 100,
+      "period": 4.0
+    },
+    "needs": {
+      "behaviour": "steady",
+      "kelvin": 2000,
+      "brightness": 100,
+      "period": 2.2
+    },
+    "done": {
+      "behaviour": "breathe",
+      "kelvin": 5200,
+      "brightness": 57,
+      "period": 4.1,
+      "seconds": 2.0
+    }
+  },
+  "several": "urgent",
+  "quiet": {
+    "enabled": false,
+    "from": "22:00",
+    "until": "08:00"
+  },
+  "paused": false,
+  "forget_after": 45
+}
