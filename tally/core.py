@@ -3,6 +3,7 @@ import asyncio
 import json
 import math
 import re
+import sys
 import time
 
 from . import data_dir
@@ -174,32 +175,47 @@ class FakeLamp:
         log("  lamp  " + "  ".join(parts))
 
 
+# A Hue lamp's Bluetooth interface. Lamps advertise HUE_ID and keep their controls in
+# CONTROL_SERVICE: power is one byte (0 or 1), brightness one byte (1-254), and colour
+# temperature two little-endian bytes in mireds.
+HUE_ID = "0000fe0f-0000-1000-8000-00805f9b34fb"
+CONTROL_SERVICE = "932c32bd-0000-47a2-835a-a8d455b859dd"
+POWER = "932c32bd-0002-47a2-835a-a8d455b859dd"
+BRIGHTNESS = "932c32bd-0003-47a2-835a-a8d455b859dd"
+TEMPERATURE = "932c32bd-0004-47a2-835a-a8d455b859dd"
+XY_COLOUR = "932c32bd-0005-47a2-835a-a8d455b859dd"
+
+
 class HueLamp:
+    """A Philips Hue lamp, talked to directly over Bluetooth with bleak."""
+
     def __init__(self, address, name=""):
         self.address = address
         self.name = name or address
-        self.light = None
+        self.client = None
         self.ok = False
         self.status = "connecting"    # connecting, connected, not found, unreachable
 
     async def connect(self):
-        from bleak import BleakScanner
-        import HueBLE
+        from bleak import BleakClient, BleakScanner
 
         self.status = "connecting"
+        await self.close()
         try:
-            if self.light is None:
-                log(f"looking for {self.address} ...")
-                device = await BleakScanner.find_device_by_address(self.address, timeout=15)
-                if device is None:
-                    self.status = "not found"
-                    log("lamp not found; is it powered on and close by?")
-                    return False
-                self.light = HueBLE.HueBleLight(device)
-            await self.light.connect()
-            # A link can come up without the lamp's controls (Windows may hold them back when
-            # pairing is in trouble), so check one before calling the lamp connected.
-            await self.light.poll_power_state()
+            log(f"looking for {self.address} ...")
+            device = await BleakScanner.find_device_by_address(self.address, timeout=15)
+            if device is None:
+                self.status = "not found"
+                log("lamp not found; is it powered on and close by?")
+                return False
+            # Ask only about the control service: newer lamps also offer Matter's setup service,
+            # which macOS won't let apps look into, failing the whole connection. On Windows, skip
+            # the cached service list, which can go stale and leave the controls missing.
+            extra = {"winrt": {"use_cached_services": False}} if sys.platform == "win32" else {}
+            self.client = BleakClient(device, timeout=20, services=[CONTROL_SERVICE],
+                                      disconnected_callback=self._lost, **extra)
+            await self.client.connect()
+            await self._unlock()
         except Exception as err:
             log(f"could not connect to the lamp ({err})")
             await self._drop()
@@ -208,22 +224,46 @@ class HueLamp:
         log(f"connected to {self.name}")
         return True
 
+    async def _unlock(self):
+        """Check the controls answer. They stay locked until the lamp is paired: macOS pairs on
+        this first read by itself; elsewhere, ask for pairing and read again."""
+        if self.client.services.get_characteristic(POWER) is None:
+            raise RuntimeError("the lamp's controls are missing")
+        try:
+            await self.client.read_gatt_char(POWER)
+        except Exception:
+            if sys.platform == "darwin":
+                raise
+            log("the lamp's controls are locked; asking to pair")
+            await self.client.pair()
+            await self.client.read_gatt_char(POWER)
+
+    def _lost(self, client):
+        if client is self.client and self.ok:
+            log("lost the Bluetooth connection to the lamp")
+            self.ok, self.status = False, "unreachable"
+
     async def close(self):
         self.ok = False
-        if self.light:
+        client, self.client = self.client, None
+        if client:
             try:
-                await self.light.disconnect()
+                await client.disconnect()
             except Exception:
                 pass
 
     async def _drop(self):
-        """Let go of a broken connection so the next attempt starts afresh with a new scan."""
+        """Let go of a broken connection so the next attempt starts afresh."""
         await self.close()
-        self.light, self.status = None, "unreachable"
+        self.status = "unreachable"
 
     def info(self):
+        try:
+            colour = bool(self.ok and self.client.services.get_characteristic(XY_COLOUR))
+        except Exception:
+            colour = False
         return {"kind": "hue", "name": self.name, "address": self.address, "status": self.status,
-                "connected": self.ok, "colour": bool(getattr(self.light, "supports_colour_xy", False))}
+                "connected": self.ok, "colour": colour}
 
     async def _retry(self, action):
         if not self.ok:
@@ -233,35 +273,35 @@ class HueLamp:
         except Exception as err:  # Bluetooth drops happen; try once more after reconnecting
             log(f"Bluetooth error ({err}); reconnecting")
             try:
-                await self.light.connect()
-                return await action()
+                if await self.connect():
+                    return await action()
             except Exception as err2:
                 log(f"still failing ({err2}); will keep trying in the background")
                 await self._drop()
-                return None
+            return None
 
     async def read(self):
         async def do():
+            c = self.client
             return {
-                "power": await self.light.poll_power_state(),
-                "mireds": await self.light.poll_colour_temp(),
-                "brightness": await self.light.poll_brightness(),
+                "power": bool((await c.read_gatt_char(POWER))[0]),
+                "mireds": int.from_bytes(await c.read_gatt_char(TEMPERATURE), "little"),
+                "brightness": (await c.read_gatt_char(BRIGHTNESS))[0],
             }
         return await self._retry(do)
 
     async def set(self, power=None, mireds=None, brightness=None):
-        import HueBLE
-
         async def do():
+            def write(uuid, data):
+                return self.client.write_gatt_char(uuid, data, response=True)
             if power is True:
-                await self.light.set_power(True)
+                await write(POWER, b"\x01")
             if mireds is not None:
-                # HueBLE's set_colour_temp clamps to 153-500; write directly so a lamp with a wider range can use it.
-                await self.light._write_gatt(HueBLE.UUID_TEMPERATURE, int(mireds).to_bytes(2, "little"))
+                await write(TEMPERATURE, max(1, min(65535, int(mireds))).to_bytes(2, "little"))
             if brightness is not None:
-                await self.light.set_brightness(brightness)
+                await write(BRIGHTNESS, bytes([max(1, min(254, int(brightness)))]))
             if power is False:
-                await self.light.set_power(False)
+                await write(POWER, b"\x00")
         await self._retry(do)
 
 
@@ -269,12 +309,11 @@ async def scan_lamps(timeout=10):
     """Hue lamps nearby as [{"address", "name"}]. A lamp's name often arrives in a later
     packet than the one that says it is a Hue lamp, so names keep being filled in."""
     from bleak import BleakScanner
-    import HueBLE
 
     found = {}
 
     def seen(device, adv):
-        if HueBLE.UUID_HUE_IDENTIFIER in adv.service_uuids or device.address in found:
+        if HUE_ID in adv.service_uuids or device.address in found:
             found[device.address] = adv.local_name or device.name or found.get(device.address)
 
     log(f"scanning for Hue lamps for {timeout} s ...")

@@ -1,8 +1,6 @@
 # Exact versions the release is built with (from 'pip freeze' in the build venv).
 altgraph==0.17.5
 bleak==3.0.2
-bleak-retry-connector==4.7.1
-HueBLE==2.2.3
 packaging==26.3
 pefile==2024.8.26
 pillow==13.0.0
