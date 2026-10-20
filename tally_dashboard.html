@@ -98,7 +98,7 @@
   .lamp .lit { opacity: var(--b, 1); transition: opacity .35s; }
   .lamp .glow { position: absolute; left: 50%; bottom: -26px; width: 300px; height: 210px; transform: translateX(-50%);
                 background: radial-gradient(closest-side, rgb(var(--c) / .55), rgb(var(--c) / .18) 55%, transparent); }
-  .lamp .lit-shade { background: radial-gradient(130% 95% at 50% 22%, rgb(255 255 255 / .6), rgb(var(--c)) 62%);
+  .lamp .lit-shade { background: radial-gradient(130% 95% at 50% 22%, rgb(255 255 255 / .35), rgb(var(--c)) 55%);
                      box-shadow: 0 0 22px rgb(var(--c) / .65); }
   .lamp .base { position: absolute; left: 50%; bottom: 15px; width: 90px; height: 12px; transform: translateX(-50%);
                 border-radius: 4px 4px 45px 45px / 4px 4px 12px 12px; background: linear-gradient(#4a505b, #2a2e35); }
@@ -157,6 +157,10 @@
   input[type="time"] { background: var(--well); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 10px; font: 13px var(--mono); width: 100%; }
   input[type="time"]:disabled { opacity: .45; }
   .note { margin-top: 10px; font-size: 12px; color: var(--accent); }
+  .measure { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12.5px; }
+  .btn:disabled { opacity: .5; cursor: progress; }
+  .calib p { font-size: 12.5px; margin: 0 0 14px; }
+  .calib input[type="range"] { --thumb: #f5f2ec; }
 
   footer.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line); }
   footer.bar .hint { color: var(--muted); font-size: 12.5px; }
@@ -249,6 +253,24 @@
         <input type="range" id="forget" min="5" max="480" step="5" aria-label="Forget a silent session after, in minutes">
       </div>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0">Covers sessions that closed without saying goodbye, such as a terminal that was killed.</p>
+      <div class="field">
+        <div class="lab"><span>Colour range</span><span class="val" id="range-val"></span></div>
+        <div class="measure" id="measure-row">
+          <button class="btn" id="measure" type="button">Find the ends</button>
+          <span class="muted" id="range-note"></span>
+        </div>
+        <div class="calib" id="calib" hidden>
+          <p class="muted">The lamp shows each slider as you drag it. Stop where it stops changing, then save.</p>
+          <div class="lab"><span>Warmest</span><span class="val" id="warm-val"></span></div>
+          <input type="range" id="warm" min="1000" max="2700" step="25" aria-label="Warmest end in kelvin">
+          <div class="lab" style="margin-top:14px"><span>Coolest</span><span class="val" id="cool-val"></span></div>
+          <input type="range" id="cool" min="5000" max="20000" step="100" aria-label="Coolest end in kelvin">
+          <div class="measure" style="margin-top:16px">
+            <button class="btn primary" id="calib-save" type="button">Save range</button>
+            <button class="btn" id="calib-cancel" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
     </fieldset>
   </section>
 
@@ -276,9 +298,9 @@ let range = [2000, 6500];
 // warm end, white around 5000 K, sky blue at the cool end. Brighter than physics,
 // so the previews read clearly on a dark screen.
 const KELVIN_STOPS = [
-  [2000, [255, 84, 22]], [2200, [255, 116, 36]], [2700, [255, 160, 66]], [3000, [255, 190, 102]],
-  [3500, [255, 218, 152]], [4000, [255, 236, 200]], [4500, [255, 247, 234]], [5000, [255, 255, 255]],
-  [5600, [214, 236, 255]], [6000, [166, 214, 255]], [6500, [110, 188, 255]],
+  [1500, [255, 28, 0]], [2000, [255, 52, 8]], [2200, [255, 92, 22]], [2700, [255, 146, 52]], [3000, [255, 180, 90]],
+  [3500, [255, 214, 146]], [4000, [255, 234, 196]], [4500, [255, 247, 234]], [5000, [255, 255, 255]],
+  [5600, [196, 226, 255]], [6000, [130, 194, 255]], [6500, [64, 150, 255]], [8000, [36, 112, 255]],
 ];
 function kelvinRGB(k) {
   const s = KELVIN_STOPS;
@@ -293,10 +315,10 @@ function kelvinRGB(k) {
   return s[s.length - 1][1].join(" ");
 }
 
-function kelvinTrack() {
+function kelvinTrack(lo = range[0], hi = range[1]) {
   const stops = [];
   for (let i = 0; i <= 16; i++) {
-    const k = range[0] + (range[1] - range[0]) * i / 16;
+    const k = lo + (hi - lo) * i / 16;
     stops.push(`rgb(${kelvinRGB(k)}) ${i * 6.25}%`);
   }
   return `linear-gradient(90deg, ${stops.join(", ")})`;
@@ -496,6 +518,80 @@ function initOptions() {
     save({ paused: cfg.paused });
   });
   $("#test-all").addEventListener("click", () => test("all"));
+  initCalibration();
+}
+
+// ---------------------------------------------------------------- finding the lamp's ends
+
+let rangeMessage = null;   // the last result of finding the ends, shown instead of the default note
+let calibrating = false, holdTimer = null, holdMireds = null;
+
+function hold(kelvin) {
+  holdMireds = Math.round(1e6 / kelvin);
+  // At most one Bluetooth change every 150 ms, always the latest slider position.
+  if (!holdTimer) holdTimer = setTimeout(async () => {
+    holdTimer = null;
+    try { await api("/api/hold", { mireds: holdMireds }); } catch {}
+  }, 150);
+}
+
+async function release() {
+  calibrating = false;
+  $("#calib").hidden = true;
+  $("#measure-row").hidden = false;
+  try { snap = await api("/api/release", {}); renderLive(); } catch {}
+}
+
+function initCalibration() {
+  const warm = $("#warm"), cool = $("#cool");
+  warm.style.setProperty("--track", kelvinTrack(+warm.min, +warm.max));
+  cool.style.setProperty("--track", kelvinTrack(+cool.min, +cool.max));
+  const label = () => {
+    $("#warm-val").textContent = `${warm.value} K`;
+    $("#cool-val").textContent = `${cool.value} K`;
+  };
+  warm.addEventListener("input", () => { label(); hold(+warm.value); });
+  cool.addEventListener("input", () => { label(); hold(+cool.value); });
+
+  $("#measure").addEventListener("click", () => {
+    calibrating = true;
+    warm.value = range[0];
+    cool.value = range[1];
+    label();
+    $("#measure-row").hidden = true;
+    $("#calib").hidden = false;
+    hold(+warm.value);
+  });
+  $("#calib-cancel").addEventListener("click", () => { rangeMessage = null; release(); });
+  $("#calib-save").addEventListener("click", async () => {
+    const lamp = { min_mireds: Math.round(1e6 / +cool.value), max_mireds: Math.round(1e6 / +warm.value) };
+    try {
+      await api("/api/settings", { lamp });
+      rangeMessage = `Saved: ${warm.value}–${cool.value} K.`;
+    } catch {
+      rangeMessage = "Couldn't save the range. Is the server running?";
+    }
+    release();
+  });
+  // Leaving the page mid-way gives the lamp back straight away rather than after the server's timeout.
+  addEventListener("pagehide", () => {
+    if (calibrating) fetch("/api/release", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", keepalive: true });
+  });
+}
+function renderRange() {
+  const [lo, hi] = snap.lamp.kelvin;
+  if (lo !== range[0] || hi !== range[1]) {
+    range = [lo, hi];
+    document.querySelectorAll(".kelvin").forEach(k => {
+      k.min = lo;
+      k.max = hi;
+      k.style.setProperty("--track", kelvinTrack());
+    });
+    ["working", "needs", "done"].forEach(syncCard);
+  }
+  $("#range-val").textContent = `${lo}–${hi} K`;
+  $("#range-note").textContent = rangeMessage ||
+    (snap.lamp.measured ? "Set from your lamp." : "HueBLE's assumed range. Find the ends to use all of your lamp's.");
 }
 
 function syncOptions() {
@@ -586,6 +682,7 @@ $("#sessions").addEventListener("click", async e => {
 function renderLive() {
   renderNow();
   renderSessions();
+  renderRange();
 }
 
 function init() {

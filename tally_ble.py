@@ -48,9 +48,13 @@ DEFAULTS = {
     "quiet": {"enabled": False, "from": "22:00", "until": "08:00"},
     "paused": False,
     "forget_after": 45,           # minutes before a session that has sent nothing is dropped
+    # The lamp's real ends, found by eye on the dashboard; 0 means not set yet. Lamps
+    # report back whatever they were sent, so the range can't be read from them.
+    "lamp": {"min_mireds": 0, "max_mireds": 0},
 }
-LIMITS = {"kelvin": (2000, 6500), "brightness": (1, 100), "period": (0.4, 10),
-          "seconds": (0.5, 10), "forget_after": (5, 480)}
+LIMITS = {"kelvin": (1000, 20000), "brightness": (1, 100), "period": (0.4, 10),
+          "seconds": (0.5, 10), "forget_after": (5, 480), "min_mireds": (0, 1000), "max_mireds": (0, 1000)}
+HOLD_SECONDS = 120                # while finding the ends, give the lamp back after this long untouched
 CHOICES = {"behaviour": BEHAVIOURS, "several": ("urgent", "latest")}
 
 
@@ -127,16 +131,25 @@ class FakeLamp:
 
     mired_range = (153, 500)
 
+    def __init__(self):
+        self.state = {"power": True, "mireds": 300, "brightness": 200}
+
     async def connect(self):
         log("fake lamp ready")
 
     def info(self):
-        return {"kind": "fake", "name": "Fake lamp", "connected": True}
+        return {"kind": "fake", "name": "Fake lamp", "connected": True, "colour": False}
 
     async def read(self):
-        return {"power": True, "mireds": 300, "brightness": 200}
+        return dict(self.state)
 
     async def set(self, power=None, mireds=None, brightness=None):
+        if mireds is not None:
+            lo, hi = self.mired_range     # like a real lamp, it stays within what it can do
+            mireds = min(hi, max(lo, mireds))
+        for key, value in (("power", power), ("mireds", mireds), ("brightness", brightness)):
+            if value is not None:
+                self.state[key] = value
         if power is None and mireds is None:
             return  # brightness steps of an animation; printing them would drown the log
         parts = [f"{k}={v}" for k, v in (("power", power), ("mireds", mireds), ("brightness", brightness)) if v is not None]
@@ -168,7 +181,8 @@ class HueLamp:
         log(f"connected to {self.name}")
 
     def info(self):
-        return {"kind": "hue", "name": self.name, "address": self.address, "connected": self.ok}
+        return {"kind": "hue", "name": self.name, "address": self.address, "connected": self.ok,
+                "colour": bool(getattr(self.light, "supports_colour_xy", False))}
 
     async def _retry(self, action):
         try:
@@ -197,11 +211,14 @@ class HueLamp:
         return await self._retry(do)
 
     async def set(self, power=None, mireds=None, brightness=None):
+        import HueBLE
+
         async def do():
             if power is True:
                 await self.light.set_power(True)
             if mireds is not None:
-                await self.light.set_colour_temp(mireds)
+                # HueBLE's set_colour_temp clamps to 153-500; write directly so a lamp with a wider range can use it.
+                await self.light._write_gatt(HueBLE.UUID_TEMPERATURE, int(mireds).to_bytes(2, "little"))
             if brightness is not None:
                 await self.light.set_brightness(brightness)
             if power is False:
@@ -230,9 +247,56 @@ class Controller:
         self.preview = None           # a state being tested from the dashboard
         self.test_task = None
         self.dirty = False            # settings changed, so redraw even if the state has not
+        self.holding = False          # the dashboard is showing raw colour temperatures to find the lamp's ends
+        self.held = False             # the lamp has been changed by holding and needs giving back
+        self.release_timer = None
 
     def muted(self):
         return self.cfg["paused"] or quiet_now(self.cfg["quiet"])
+
+    def mired_range(self):
+        measured = self.cfg["lamp"]
+        if measured["min_mireds"] and measured["max_mireds"]:
+            return measured["min_mireds"], measured["max_mireds"]
+        return self.lamp.mired_range
+
+    def hold(self, mireds):
+        """Show a raw colour temperature, past the usual range, while you look for the lamp's ends."""
+        self.holding = True
+        if self.release_timer:
+            self.release_timer.cancel()
+        self.release_timer = asyncio.create_task(self._release_later())
+        asyncio.create_task(self._hold(mireds))
+
+    async def _hold(self, mireds):
+        async with self.lock:
+            if not self.holding:
+                return
+            await self._stop()
+            if self.shown == "idle" and not self.held:
+                self.saved = await self.lamp.read()
+            self.held = True
+            await self._write(power=True, mireds=mireds, brightness=254)
+
+    async def release(self):
+        """Give the lamp back after holding: to how you left it, or to what the sessions need."""
+        if self.release_timer and self.release_timer is not asyncio.current_task():
+            self.release_timer.cancel()
+        self.release_timer = None
+        async with self.lock:
+            if not self.holding:
+                return
+            self.holding = False
+            if self.held and self.shown == "idle":
+                await self._restore()
+            self.held = False
+            self.dirty = True
+        await self.update()
+
+    async def _release_later(self):
+        await asyncio.sleep(HOLD_SECONDS)
+        log("finding the lamp's ends was left open; giving the lamp back")
+        await self.release()
 
     def signal(self, state, sid, info=None):
         info = info or {}
@@ -296,6 +360,8 @@ class Controller:
     async def update(self, finished=False):
         """Bring the lamp to the target state, playing the Finished look first if asked."""
         async with self.lock:
+            if self.holding:
+                return
             target = self.target()
             if target == self.shown and not finished and not self.dirty:
                 return
@@ -327,7 +393,7 @@ class Controller:
     async def _play(self, name, seconds=None):
         """Show one state's look, forever or for a number of seconds."""
         look = self.cfg["states"][name]
-        lo, hi = self.lamp.mired_range
+        lo, hi = self.mired_range()
         mireds = min(hi, max(lo, round(1_000_000 / look["kelvin"])))
         top = max(1, round(look["brightness"] * 254 / 100))
         await self._write(power=True, mireds=mireds, brightness=top)
@@ -377,12 +443,13 @@ class Controller:
     def snapshot(self):
         self.prune()
         now = time.time()
-        lo, hi = self.lamp.mired_range
+        lo, hi = self.mired_range()
         kmin, kmax = LIMITS["kelvin"]
         sessions = sorted(self.sessions.items(), key=lambda kv: kv[1]["started"])
         return {
             "lamp": {**self.lamp.info(), "showing": self.shown, "testing": self.preview is not None,
-                     "kelvin": [max(kmin, math.ceil(1_000_000 / hi)), min(kmax, math.floor(1_000_000 / lo))]},
+                     "kelvin": [max(kmin, math.ceil(1_000_000 / hi)), min(kmax, math.floor(1_000_000 / lo))],
+                     "measured": bool(self.cfg["lamp"]["min_mireds"] and self.cfg["lamp"]["max_mireds"])},
             "paused": self.cfg["paused"],
             "quiet_now": quiet_now(self.cfg["quiet"]),
             "sessions": [{"id": sid, "state": v["state"], "project": v["project"], "cwd": v["cwd"],
@@ -403,16 +470,21 @@ async def serve(lamp):
     await lamp.connect()
     ctl = Controller(lamp)
 
-    def api(name, data):
+    async def api(name, data):
+        extra = {}
         if name == "settings":
             ctl.apply(data)
         elif name == "test" and data.get("state") in ("all", "working", "needs", "done"):
             ctl.test(data["state"])
         elif name == "forget":
             ctl.forget(str(data.get("id")))
+        elif name == "hold" and isinstance(data.get("mireds"), (int, float)):
+            ctl.hold(min(1000, max(50, round(data["mireds"]))))
+        elif name == "release":
+            await ctl.release()
         else:
-            return "404 Not Found"
-        return "200 OK"
+            return "404 Not Found", extra
+        return "200 OK", extra
 
     async def handle(reader, writer):
         try:
@@ -447,8 +519,8 @@ async def serve(lamp):
                     code = "415 Unsupported Media Type"
                 else:
                     data = json.loads(body or b"{}")
-                    code = api(path[4:], data if isinstance(data, dict) else {})
-                    reply, kind = json.dumps(ctl.snapshot()).encode(), "application/json"
+                    code, extra = await api(path[4:], data if isinstance(data, dict) else {})
+                    reply, kind = json.dumps({**ctl.snapshot(), **extra}).encode(), "application/json"
             else:
                 code = "404 Not Found"
             # Claude Code treats an empty 2xx body as plain success.
@@ -506,7 +578,6 @@ def status():
         print(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/status", timeout=1.5).read().decode())
     except Exception as err:
         print(f"Tally server not reachable ({err}). Is 'serve' running?")
-
 
 def main():
     p = argparse.ArgumentParser(description="Tally: light a Hue Bluetooth lamp while Claude Code works.")
